@@ -195,6 +195,8 @@ switch (startingSide) {
 }
 
 let hushFinish = false;
+let openaiTokens = 0;
+let anthropicTokens = 0;
 
 const err = (name: ModelSide) => {
     const id = name == 'anthropic' ? `${ANTHROPIC_NAME}です。` : `${OPENAI_NAME}です。`;
@@ -216,6 +218,7 @@ const openAiTurn = async () => {
     });
     try {
         const count = openaiTokenCounter.chat(msgs as RawMessageOpenAi[], 'gpt-4o') + 500;
+        openaiTokens = count;
         if (count > 0.8 * GPT_5_1_MAX) {
             hushFinish = true;
         }
@@ -334,6 +337,7 @@ const anthropicTurn = async () => {
         });
         if (msg?.usage) {
             const tokens = msg.usage.input_tokens + msg.usage.output_tokens;
+            anthropicTokens = tokens;
             if (tokens > CLAUDE_HAIKU_4_5_MAX * 0.8) {
                 hushFinish = true;
             }
@@ -423,6 +427,12 @@ const finish = () => {
         + 'このあたりで哲学対話を閉じさせていただこうと思います。'
         + 'ありがとうございました。'
     );
+    log(
+        'EOF',
+        `reason: ${hushFinish ? 'token_limit' : 'model_decision'}`
+        + `, openai_tokens: ${openaiTokens}`
+        + `, anthropic_tokens: ${anthropicTokens}`
+    )
 };
 
 let started = false;
