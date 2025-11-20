@@ -100,6 +100,7 @@ export function toAnthropicTools(
         name: t.name,
         description: t.description,
         input_schema: t.parameters, // same JSON Schema object
+        type: 'custom',
     }));
 }
 
@@ -148,10 +149,10 @@ const buildSystemInstruction = (name: string, additional?: string) => {
 const openAiClient = new OpenAI({});
 const anthropicClient = new Anthropic({});
 
-type name = 'openai' | 'anthropic';
+type ModelSide = 'openai' | 'anthropic';
 
 interface Message {
-    name: name;
+    name: ModelSide;
     content: string;
 }
 
@@ -174,11 +175,11 @@ const messages: Message[] = [
 
 let hushFinish = false;
 
-const err = (name: name) => {
+const err = (name: ModelSide) => {
     const id = name == 'anthropic' ? 'Claude Haiku 4.5です。' : 'GPT 5.1です。';
     messages.push({
         name: name,
-        content: `${id}しばらく考え中です。お待ちください。`,
+        content: `${id}しばらく考え中です。お待ちください。（このメッセージはAPIの制限などの問題が発生したときにも出ることがあります、笑）`,
     });
 };
 
@@ -191,7 +192,7 @@ const openAiTurn = async () => {
         }
     });
     try {
-        const count = openaiTokenCounter.chat(msgs as RawMessageOpenAi[], 'gpt-4o');
+        const count = openaiTokenCounter.chat(msgs as RawMessageOpenAi[], 'gpt-4o') + 500;
         if (count > 0.8 * GPT_5_1_MAX) {
             hushFinish = true;
         }
@@ -219,16 +220,17 @@ const openAiTurn = async () => {
         msgs.push(... output);
 
         let last = output.pop()!;
-        if (last.type == 'custom_tool_call') {
+        if (last.type == 'function_call') {
             const tool = findTool(last.name);
-            const args = last.input || {};
+            const args = last.arguments || {};
             const result = await tool.handler(args);
-            const toolResult: OpenAI.Responses.ResponseCustomToolCallOutput[] = [
+            const toolResult: OpenAI.Responses.ResponseFunctionToolCallOutputItem[] = [
                 {
-                    type: 'custom_tool_call_output',
+                    type: 'function_call_output',
                     output: JSON.stringify(result),
+                    id: last.id!,
                     call_id: last.call_id,
-                },
+                } satisfies OpenAI.Responses.ResponseFunctionToolCallOutputItem,
             ];
 
             msgs.push(... toolResult);
@@ -273,11 +275,23 @@ const openAiTurn = async () => {
 };
 
 const anthropicTurn = async () => {
-    const msgs: Anthropic.MessageParam[] = messages.map(msg => {
+    const msgs: Anthropic.Messages.MessageParam[] = messages.map(msg => {
         if (msg.name == 'openai') {
-            return {role: 'user', content: msg.content};
+            return {
+                role: 'user',
+                content: [{
+                    type: 'text',
+                    text: msg.content,
+                }],
+            };
         } else {
-            return {role: 'assistant', content: msg.content};
+            return {
+                role: 'assistant',
+                content: [{
+                    type: 'text',
+                    text: msg.content,
+                }],
+            };
         }
     });
     try {
@@ -295,8 +309,12 @@ const anthropicTurn = async () => {
             tool_choice: { type: 'auto' },
             tools: anthropicTools,
         });
-        const tokens = msg.usage.input_tokens + msg.usage.output_tokens;
-        if (tokens > CLAUDE_HAIKU_4_5_MAX * 0.8) {
+        if (msg?.usage) {
+            const tokens = msg.usage.input_tokens + msg.usage.output_tokens;
+            if (tokens > CLAUDE_HAIKU_4_5_MAX * 0.8) {
+                hushFinish = true;
+            }
+        } else {
             hushFinish = true;
         }
 
