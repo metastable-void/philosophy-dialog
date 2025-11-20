@@ -235,6 +235,20 @@ const openAiTurn = async () => {
             tool_choice: 'auto',
             tools: openaiTools,
         });
+
+        // NEW: log reasoning usage if available
+        if (response.usage?.output_tokens_details) {
+            const details = response.usage.output_tokens_details as any;
+            const reasoningTokens = details.reasoning_tokens ?? 0;
+            log(
+                `${OPENAI_NAME} (thinking)`,
+                JSON.stringify({
+                    reasoning_tokens: reasoningTokens,
+                    output_tokens_details: details,
+                })
+            );
+        }
+
         const { output } = response;
         if (!output) throw new Error('Empty output from OpenAI');
 
@@ -329,7 +343,25 @@ const anthropicTurn = async () => {
             messages: msgs,
             tool_choice: { type: 'auto' },
             tools: anthropicTools,
+            thinking: {
+                type: 'enabled',
+                budget_tokens: 1024,
+            },
         });
+
+        const thinkingBlocks = msg.content.filter(
+            (block): block is Anthropic.Messages.ThinkingBlock => block.type === 'thinking'
+        );
+
+
+        for (const block of thinkingBlocks) {
+            // `block.thinking` is the human-readable reasoning text (or redacted version)
+            log(
+                `${ANTHROPIC_NAME} (thinking)`,
+                block.thinking
+            );
+        }
+        
         if (msg?.usage) {
             const tokens = msg.usage.input_tokens + msg.usage.output_tokens;
             anthropicTokens = tokens;
