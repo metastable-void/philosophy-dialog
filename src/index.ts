@@ -156,11 +156,6 @@ interface Message {
     content: string;
 }
 
-interface RawMessage {
-    role: 'assistant' | 'user';
-    content: string;
-}
-
 interface RawMessageOpenAi {
     role: 'assistant' | 'user' | 'system';
     content: string;
@@ -432,6 +427,7 @@ const finish = () => {
         `reason: ${hushFinish ? 'token_limit' : 'model_decision'}`
         + `, openai_tokens: ${openaiTokens}`
         + `, anthropic_tokens: ${anthropicTokens}`
+        + `, starting_side: ${startingSide}`
     );
 };
 
