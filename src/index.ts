@@ -7,6 +7,9 @@ import { OpenAI } from 'openai';
 import openaiTokenCounter from "openai-gpt-token-counter";
 import Anthropic from "@anthropic-ai/sdk";
 
+import { betaZodTool } from '@anthropic-ai/sdk/helpers/beta/zod';
+import { z } from 'zod';
+
 const OPENAI_MODEL = 'gpt-5.1';
 const ANTHROPIC_MODEL = 'claude-haiku-4-5';
 
@@ -38,6 +41,79 @@ const getDate = () => {
 
     return `${YYYY}${MM}${DD}-${hh}${mm}${ss}`;
 };
+
+export type ToolName = "terminate_dialog";
+
+export interface ToolDefinition<TArgs = any, TResult = any, TName = ToolName> {
+    name: TName;
+    description: string;
+    parameters: any; // JSON Schema
+    handler: (args: TArgs) => Promise<TResult>;
+}
+
+let terminationAccepted = false;
+
+// Example tool implementation
+type TerminateDialogArgs = {};
+
+type TerminateDialogResult = {
+    termination_accepted: true,
+};
+
+async function terminateDialogHandler(args: TerminateDialogArgs): Promise<TerminateDialogResult> {
+    terminationAccepted = true;
+    return {
+        termination_accepted: true,
+    };
+}
+
+const tools: ToolDefinition[] = [
+    {
+        name: "terminate_dialog",
+        description: 
+            'このツールは現在の対話を終了する場合のみに使用します。'
+            + 'このツールを呼びだすと、次のあなたの発言で対話が終了します。'
+            + '議論が熟したとの合意が取れたときのほか、あなたが不快に思ったり、'
+            + 'トークン数が増えてきた場合に使用して構いません。',
+        parameters: {
+            type: "object",
+            properties: {},
+            required: [],
+        },
+        handler: terminateDialogHandler,
+    },
+];
+
+function toOpenAITools(
+    defs: ToolDefinition[],
+): OpenAI.Responses.Tool[] {
+    return defs.map((t) => ({
+        type: 'function',
+        strict: true,
+        name: t.name,
+        description: t.description,
+        parameters: {... t.parameters, additionalProperties: false},
+    }));
+}
+
+export function toAnthropicTools(
+    defs: ToolDefinition[],
+): Anthropic.Messages.Tool[] {
+    return defs.map((t) => ({
+        name: t.name,
+        description: t.description,
+        input_schema: t.parameters, // same JSON Schema object
+    }));
+}
+
+function findTool(name: string) {
+    const tool = tools.find((t) => t.name === name);
+    if (!tool) throw new Error(`Unknown tool: ${name}`);
+    return tool;
+}
+
+const openaiTools = toOpenAITools(tools);
+const anthropicTools = toAnthropicTools(tools);
 
 const logFp = fs.openSync(`./logs/${getDate()}.log.jsonl`, 'a');
 
@@ -110,7 +186,7 @@ const err = (name: name) => {
 };
 
 const openAiTurn = async () => {
-    const msgs: RawMessageOpenAi[] = messages.map(msg => {
+    const msgs: OpenAI.Responses.ResponseInput = messages.map(msg => {
         if (msg.name == 'anthropic') {
             return {role: 'user', content: msg.content};
         } else {
@@ -118,7 +194,7 @@ const openAiTurn = async () => {
         }
     });
     try {
-        const count = openaiTokenCounter.chat(msgs, 'gpt-4o');
+        const count = openaiTokenCounter.chat(msgs as RawMessageOpenAi[], 'gpt-4o');
         if (count > 0.8 * GPT_5_1_MAX) {
             hushFinish = true;
         }
@@ -137,14 +213,61 @@ const openAiTurn = async () => {
                 hushFinish ? undefined : '1回の発言は4000字程度を上限としてください。短い発言もOKです。',
             ),
             input: msgs,
+            tool_choice: 'auto',
+            tools: openaiTools,
         });
-        const output = response.output_text;
-        if (!output || 'string' != typeof output) {
+        const { output } = response;
+        if (!output) throw new Error('Empty output from OpenAI');
+
+        msgs.push(... output);
+
+        let last = output.pop()!;
+        if (last.type == 'custom_tool_call') {
+            const tool = findTool(last.name);
+            const args = last.input || {};
+            const result = await tool.handler(args);
+            const toolResult: OpenAI.Responses.ResponseCustomToolCallOutput[] = [
+                {
+                    type: 'custom_tool_call_output',
+                    output: JSON.stringify(result),
+                    call_id: last.call_id,
+                },
+            ];
+
+            msgs.push(... toolResult);
+
+            const followup = await openAiClient.responses.create({
+                model: OPENAI_MODEL,
+                max_output_tokens: 8192,
+                temperature: 1.0,
+                instructions: buildSystemInstruction(
+                    OPENAI_NAME,
+                    '司会より：あなたが対話終了ツールを呼び出したため、'
+                        + 'あなたの次の発言は本対話における最後の発言となります。'
+                        + 'お疲れさまでした。',
+                ),
+                input: msgs,
+                tool_choice: 'auto',
+                tools: openaiTools,
+            });
+            last = followup.output!.pop()!;
+        }
+        if (last.type != 'message') {
+            throw new Error('Invalid output from OpenAI');
+        }
+
+        const outputMsg = last.content.pop()!;
+        if (outputMsg.type != 'output_text') {
+            terminationAccepted = true;
+            throw new Error('Refused by OpenAI API');
+        }
+        const outputText = outputMsg.text;
+        if (!outputText || 'string' != typeof outputText) {
             throw new Error('OpenAI didn\'t output text');
         }
         messages.push({
             name: 'openai',
-            content: output,
+            content: outputText,
         });
     } catch (e) {
         console.error(e);
@@ -153,7 +276,7 @@ const openAiTurn = async () => {
 };
 
 const anthropicTurn = async () => {
-    const msgs: RawMessage[] = messages.map(msg => {
+    const msgs: Anthropic.MessageParam[] = messages.map(msg => {
         if (msg.name == 'openai') {
             return {role: 'user', content: msg.content};
         } else {
@@ -172,12 +295,54 @@ const anthropicTurn = async () => {
                     : '1回の発言は4000字程度を上限としてください。短い発言もOKです。'
             ),
             messages: msgs,
+            tool_choice: { type: 'auto' },
+            tools: anthropicTools,
         });
         const tokens = msg.usage.input_tokens + msg.usage.output_tokens;
         if (tokens > CLAUDE_HAIKU_4_5_MAX * 0.8) {
             hushFinish = true;
         }
-        const output = msg.content.pop()!;
+
+        let output = msg.content.pop()!;
+
+        msgs.push({
+            role: 'assistant',
+            content: [output],
+        });
+
+        if ('tool_use' == output.type) {
+            const toolResultsBlocks: Anthropic.Messages.ToolResultBlockParam[] = [];
+            const use = output;
+            const tool = findTool(use.name);
+            const result = await tool.handler(use.input);
+            toolResultsBlocks.push({
+                type: "tool_result",
+                tool_use_id: use.id,
+                content: [{ type: "text", text: JSON.stringify(result) }],
+            });
+
+            msgs.push({
+                role: 'user',
+                content: toolResultsBlocks,
+            });
+
+            const followup = await anthropicClient.messages.create({
+                model: ANTHROPIC_MODEL,
+                max_tokens: 8192,
+                temperature: 1.0,
+                system: buildSystemInstruction(
+                    ANTHROPIC_NAME,
+                    '司会より：あなたが対話終了ツールを呼び出したため、'
+                        + 'あなたの次の発言は本対話における最後の発言となります。'
+                        + 'お疲れさまでした。',
+                ),
+                messages: msgs,
+                tool_choice: { type: 'auto' },
+                tools: anthropicTools,
+            });
+
+            output = followup.content.pop()!;
+        }
         if ('text' != output.type) {
             throw new Error('Non-text output from Anthropic');
         }
@@ -229,7 +394,7 @@ while (true) {
     }
     log('GPT 5.1', messages[messages.length - 1]!.content);
 
-    if (finishTurnCount >= 2) {
+    if (finishTurnCount >= 2 || terminationAccepted) {
         finish();
         break;
     }
@@ -242,7 +407,7 @@ while (true) {
     await anthropicTurn();
     log('Claude Haiku 4.5', messages[messages.length - 1]!.content);
 
-    if (finishTurnCount >= 2) {
+    if (finishTurnCount >= 2 || terminationAccepted) {
         finish();
         break;
     }
