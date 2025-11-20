@@ -217,7 +217,6 @@ const openAiTurn = async () => {
     });
     try {
         const count = openaiTokenCounter.chat(msgs as RawMessageOpenAi[], 'gpt-4o') + 500;
-        openaiTokens = count;
         if (count > 0.8 * GPT_5_1_MAX) {
             hushFinish = true;
         }
@@ -239,6 +238,10 @@ const openAiTurn = async () => {
             tool_choice: 'auto',
             tools: openaiTools,
         });
+
+        if (response.usage?.total_tokens) {
+            openaiTokens = response.usage.total_tokens;
+        }
 
         // NEW: log reasoning usage if available
         if (response.usage?.output_tokens_details) {
@@ -288,6 +291,10 @@ const openAiTurn = async () => {
                 tool_choice: 'auto',
                 tools: openaiTools,
             });
+
+            if (followup.usage?.total_tokens) {
+                openaiTokens = followup.usage.total_tokens;
+            }
             last = followup.output!.pop()!;
         }
         if (last.type != 'message') {
