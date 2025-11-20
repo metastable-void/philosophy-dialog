@@ -7,9 +7,6 @@ import { OpenAI } from 'openai';
 import openaiTokenCounter from "openai-gpt-token-counter";
 import Anthropic from "@anthropic-ai/sdk";
 
-import { betaZodTool } from '@anthropic-ai/sdk/helpers/beta/zod';
-import { z } from 'zod';
-
 const OPENAI_MODEL = 'gpt-5.1';
 const ANTHROPIC_MODEL = 'claude-haiku-4-5';
 
