@@ -265,7 +265,7 @@ const openAiTurn = async () => {
                 {
                     type: 'function_call_output',
                     output: JSON.stringify(result),
-                    id: randomId(),
+                    id: 'fc-' + randomId(),
                     call_id: last.call_id,
                 } satisfies OpenAI.Responses.ResponseFunctionToolCallOutputItem,
             ];
