@@ -8,6 +8,8 @@ import { OpenAI } from 'openai';
 import openaiTokenCounter from "openai-gpt-token-counter";
 import Anthropic from "@anthropic-ai/sdk";
 
+import { output_to_html } from './html.js';
+
 const OPENAI_MODEL = 'gpt-5.1';
 const ANTHROPIC_MODEL = 'claude-haiku-4-5';
 
@@ -113,7 +115,8 @@ function findTool(name: string) {
 const openaiTools = toOpenAITools(tools);
 const anthropicTools = toAnthropicTools(tools);
 
-const logFp = fs.openSync(`./logs/${getDate()}.log.jsonl`, 'a');
+const LOG_FILE_NAME = `./logs/${getDate()}.log.jsonl`;
+const logFp = fs.openSync(LOG_FILE_NAME, 'a');
 
 const log = (name: string, msg: string) => {
     const date = (new Date).toISOString();
@@ -270,7 +273,7 @@ const openAiTurn = async () => {
                 {
                     type: 'function_call_output',
                     output: JSON.stringify(result),
-                    id: 'fc-' + randomId(),
+                    id: last.id ?? 'fc-' + randomId(),
                     call_id: last.call_id,
                 } satisfies OpenAI.Responses.ResponseFunctionToolCallOutputItem,
             ];
@@ -479,6 +482,9 @@ const finish = () => {
             starting_side: startingSide,
         })
     );
+    fs.closeSync(logFp);
+    output_to_html(LOG_FILE_NAME);
+    process.exit(0);
 };
 
 let started = false;

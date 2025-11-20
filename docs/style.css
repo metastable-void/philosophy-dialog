@@ -1,0 +1,68 @@
+
+@import url('https://fonts.googleapis.com/css2?family=Inconsolata:wght@200..900&family=Noto+Sans+JP:wght@100..900&display=swap');
+@import url('https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/default.min.css');
+
+body {
+    font-family: "Noto Sans JP", sans-serif;
+    max-inline-size: 42rem;
+    margin-block: 0;
+    margin-inline: auto;
+    padding: 1rem;
+}
+
+blockquote {
+    margin-inline: .5rem;
+    padding-inline: .5rem;
+    padding-block: 0;
+    margin-block: 1rem;
+    border-inline-start: solid .25rem #888;
+
+}
+
+pre, code {
+    font-family: "Inconsolata", monospace;
+}
+
+footer {
+    margin-block-start: 3rem;
+    text-align: end;
+    font-size: 80%;
+    border-block-start: solid .25rem #888;
+}
+
+.speaker {
+    display: flex;
+    flex-direction: row;
+    flex-wrap: wrap;
+    margin-block-start: 2rem;
+}
+
+.thinking {
+    font-size: 85%;
+    opacity: .5;
+}
+
+.speaker .name {
+    flex: 1;
+    font-weight: bold;
+}
+
+.speaker .date {
+    opacity: .5;
+    font-size: 85%;
+}
+
+.message {
+    margin-inline-start: 3rem;
+    padding-inline: 1rem;
+    padding-block: .125rem;
+    border-radius: .5rem;
+}
+
+.message.llm.side-0 {
+    background-color: #c1e7e7;
+}
+
+.message.llm.side-1 {
+    background-color: #dddddd;
+}
