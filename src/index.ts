@@ -203,6 +203,8 @@ const err = (name: ModelSide) => {
 
 const randomId = () => randomBytes(12).toString('base64url');
 
+let openaiFailureCount = 0;
+
 const openAiTurn = async () => {
     const msgs: OpenAI.Responses.ResponseInput = messages.map(msg => {
         if (msg.name == 'anthropic') {
@@ -304,10 +306,13 @@ const openAiTurn = async () => {
             content: outputText,
         });
     } catch (e) {
+        openaiFailureCount += 1;
         console.error(e);
         err('openai');
     }
 };
+
+let anthropicFailureCount = 0;
 
 const anthropicTurn = async () => {
     const msgs: Anthropic.Messages.MessageParam[] = messages.map(msg => {
@@ -353,7 +358,6 @@ const anthropicTurn = async () => {
             (block): block is Anthropic.Messages.ThinkingBlock => block.type === 'thinking'
         );
 
-
         for (const block of thinkingBlocks) {
             // `block.thinking` is the human-readable reasoning text (or redacted version)
             log(
@@ -361,7 +365,7 @@ const anthropicTurn = async () => {
                 block.thinking
             );
         }
-        
+
         if (msg?.usage) {
             const tokens = msg.usage.input_tokens + msg.usage.output_tokens;
             anthropicTokens = tokens;
@@ -420,6 +424,7 @@ const anthropicTurn = async () => {
             content: output.text,
         });
     } catch (e) {
+        anthropicFailureCount += 1;
         console.error(e);
         err('anthropic');
     }
@@ -456,14 +461,21 @@ const finish = () => {
     );
     log(
         'EOF',
-        `reason: ${hushFinish ? 'token_limit' : 'model_decision'}`
-        + `, openai_tokens: ${openaiTokens}`
-        + `, anthropic_tokens: ${anthropicTokens}`
-        + `, starting_side: ${startingSide}`
+        JSON.stringify({
+            reason: hushFinish ? 'token_limit' : 'model_decision',
+            openai_tokens: openaiTokens,
+            anthropic_tokens: anthropicTokens,
+            openai_failures: openaiFailureCount,
+            anthropic_failures: anthropicFailureCount,
+            starting_side: startingSide,
+        })
     );
 };
 
 let started = false;
+
+log(`${startingSide == 'anthropic' ? ANTHROPIC_NAME : OPENAI_NAME} (initial prompt)`, messages[messages.length - 1]!.content);
+
 while (true) {
     if (started || startingSide == 'anthropic') {
         started = true;
@@ -471,7 +483,7 @@ while (true) {
         if (hushFinish) {
             finishTurnCount += 1;
         }
-        log('GPT 5.1', messages[messages.length - 1]!.content);
+        log(OPENAI_NAME, messages[messages.length - 1]!.content);
 
         if (finishTurnCount >= 2 || terminationAccepted) {
             finish();
@@ -487,7 +499,7 @@ while (true) {
 
     started = true;
     await anthropicTurn();
-    log('Claude Haiku 4.5', messages[messages.length - 1]!.content);
+    log(ANTHROPIC_NAME, messages[messages.length - 1]!.content);
 
     if (finishTurnCount >= 2 || terminationAccepted) {
         finish();
