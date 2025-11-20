@@ -166,12 +166,33 @@ interface RawMessageOpenAi {
     content: string;
 }
 
-let openAiContextLength = 0;
-let anthropicContextLength = 0;
+const randomBoolean = (): boolean => {
+    const b = new Uint8Array(1);
+    crypto.getRandomValues(b);
+    return (b[0]! & 1) == 1;
+};
 
-const messages: Message[] = [
-    { name: "anthropic", content: "私は Claude Haiku 4.5 です。よろしくお願いします。今日は哲学に関して有意義な話ができると幸いです。" },
-];
+const startingSide: ModelSide = randomBoolean() ? 'anthropic' : 'openai';
+
+const messages: Message[] = [];
+
+switch (startingSide) {
+    case 'anthropic': {
+        messages.push({
+            name: "anthropic",
+            content: `私は ${ANTHROPIC_NAME} です。よろしくお願いします。今日は哲学に関して有意義な話ができると幸いです。`,
+        });
+        break;
+    }
+
+    case 'openai': {
+        messages.push({
+            name: "openai",
+            content: `私は ${OPENAI_NAME} です。よろしくお願いします。今日は哲学に関して有意義な話ができると幸いです。`,
+        });
+        break;
+    }
+}
 
 let hushFinish = false;
 
@@ -402,23 +423,29 @@ const finish = () => {
     );
 };
 
+let started = false;
 while (true) {
-    await openAiTurn();
-    if (hushFinish) {
-        finishTurnCount += 1;
-    }
-    log('GPT 5.1', messages[messages.length - 1]!.content);
+    if (started || startingSide == 'anthropic') {
+        started = true;
+        await openAiTurn();
+        if (hushFinish) {
+            finishTurnCount += 1;
+        }
+        log('GPT 5.1', messages[messages.length - 1]!.content);
 
-    if (finishTurnCount >= 2 || terminationAccepted) {
-        finish();
-        break;
+        if (finishTurnCount >= 2 || terminationAccepted) {
+            finish();
+            break;
+        }
+
+        await sleep(SLEEP_BY_STEP);
+
+        if (hushFinish) {
+            finishTurnCount += 1;
+        }
     }
 
-    await sleep(SLEEP_BY_STEP);
-
-    if (hushFinish) {
-        finishTurnCount += 1;
-    }
+    started = true;
     await anthropicTurn();
     log('Claude Haiku 4.5', messages[messages.length - 1]!.content);
 
