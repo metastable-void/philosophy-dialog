@@ -78,7 +78,7 @@ const openAiTurn = async () => {
     try {
         const response = await openAiClient.responses.create({
             model: "gpt-5.1",
-            max_output_tokens: 2000,
+            max_output_tokens: 4096,
             temperature: 1.0,
             instructions: `
 あなたは日本語の1:1の哲学対話に招かれている参加者です。自己紹介のあと、話題を提起し、あなたの関心のある事項について、相手と合わせながら会話をしてください。
@@ -120,7 +120,7 @@ const anthropicTurn = async () => {
     try {
         const msg = await anthropicClient.messages.create({
             model: "claude-haiku-4-5",
-            max_tokens: 2000,
+            max_tokens: 4096,
             temperature: 1.0,
             system: `
 あなたは日本語の1:1の哲学対話に招かれている参加者です。自己紹介のあと、話題を提起し、あなたの関心のある事項について、相手と合わせながら会話をしてください。
@@ -179,6 +179,6 @@ while (true) {
 
     await anthropicTurn();
     log('Claude Haiku 4.5', messages[messages.length - 1]!.content);
-    
+
     await sleep(3000);
 }
