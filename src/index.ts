@@ -196,11 +196,17 @@ switch (startingSide) {
 let hushFinish = false;
 
 const err = (name: ModelSide) => {
-    const id = name == 'anthropic' ? 'Claude Haiku 4.5です。' : 'GPT 5.1です。';
+    const id = name == 'anthropic' ? `${ANTHROPIC_NAME}です。` : `${OPENAI_NAME}です。`;
     messages.push({
         name: name,
         content: `${id}しばらく考え中です。お待ちください。（このメッセージはAPIの制限などの問題が発生したときにも出ることがあります、笑）`,
     });
+};
+
+const randomId = () => {
+    const buf = new Uint8Array(12);
+    crypto.getRandomValues(buf);
+    return btoa([... buf].map(b => String.fromCodePoint(b)).join(''));
 };
 
 const openAiTurn = async () => {
@@ -248,7 +254,7 @@ const openAiTurn = async () => {
                 {
                     type: 'function_call_output',
                     output: JSON.stringify(result),
-                    id: last.id!,
+                    id: randomId(),
                     call_id: last.call_id,
                 } satisfies OpenAI.Responses.ResponseFunctionToolCallOutputItem,
             ];
