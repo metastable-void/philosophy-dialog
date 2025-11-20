@@ -432,7 +432,7 @@ const finish = () => {
         `reason: ${hushFinish ? 'token_limit' : 'model_decision'}`
         + `, openai_tokens: ${openaiTokens}`
         + `, anthropic_tokens: ${anthropicTokens}`
-    )
+    );
 };
 
 let started = false;
