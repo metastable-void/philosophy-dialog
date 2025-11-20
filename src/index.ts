@@ -1,4 +1,5 @@
 
+import { webcrypto as crypto, randomBytes } from 'node:crypto';
 import * as fs from 'node:fs';
 
 import * as dotenv from 'dotenv';
@@ -203,11 +204,7 @@ const err = (name: ModelSide) => {
     });
 };
 
-const randomId = () => {
-    const buf = new Uint8Array(12);
-    crypto.getRandomValues(buf);
-    return btoa([... buf].map(b => String.fromCodePoint(b)).join(''));
-};
+const randomId = () => randomBytes(12).toString('base64url');
 
 const openAiTurn = async () => {
     const msgs: OpenAI.Responses.ResponseInput = messages.map(msg => {
