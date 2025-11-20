@@ -118,7 +118,7 @@ const openAiTurn = async () => {
         }
     });
     try {
-        const count = openaiTokenCounter.chat(msgs, OPENAI_MODEL);
+        const count = openaiTokenCounter.chat(msgs, 'cl100k_base');
         if (count > 0.8 * GPT_5_1_MAX) {
             hushFinish = true;
         }
