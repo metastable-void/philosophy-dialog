@@ -132,6 +132,8 @@ const buildSystemInstruction = (name: string, additional?: string) => {
 
 相手にはモデル名通り、「${name}」と名乗ってください。
 
+なお、この会話の相手は別のAIです。人間ではありません。
+
 話題の例：
 
 - 現代の科学やAIが発展している中での形而上学について
