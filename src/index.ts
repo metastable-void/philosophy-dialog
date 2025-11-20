@@ -100,7 +100,6 @@ export function toAnthropicTools(
         name: t.name,
         description: t.description,
         input_schema: t.parameters, // same JSON Schema object
-        type: 'custom',
     }));
 }
 
