@@ -414,6 +414,34 @@ const logToolEvent = (
     );
 };
 
+const findLastOpenAIOutput = <T extends OpenAI.Responses.ResponseOutputItem>(
+    items: OpenAI.Responses.ResponseOutputItem[] | undefined,
+    predicate: (item: OpenAI.Responses.ResponseOutputItem) => item is T,
+): T | undefined => {
+    if (!items) return undefined;
+    for (let i = items.length - 1; i >= 0; i -= 1) {
+        const item = items[i];
+        if (!item) continue;
+        if (predicate(item)) {
+            return item;
+        }
+    }
+    return undefined;
+};
+
+const findLastOpenAIMessageContent = (
+    contents: OpenAI.Responses.ResponseOutputMessage['content'],
+): OpenAI.Responses.ResponseOutputText | undefined => {
+    for (let i = contents.length - 1; i >= 0; i -= 1) {
+        const part = contents[i];
+        if (!part) continue;
+        if (part.type === 'output_text') {
+            return part;
+        }
+    }
+    return undefined;
+};
+
 const buildSystemInstruction = (name: string, additional?: string) => {
     let prompt = `
 あなたは日本語の1:1の哲学対話に招かれている参加者です。自己紹介のあと、話題を提起し、あなたの関心のある事項について、相手と合わせながら会話をしてください。
@@ -742,32 +770,40 @@ const openaiTurn = async () => {
             );
         }
 
-        const { output } = response;
-        if (!output) throw new Error('Empty output from OpenAI');
+        const outputItems = response.output;
+        if (!outputItems || outputItems.length === 0) {
+            throw new Error('Empty output from OpenAI');
+        }
 
-        msgs.push(... output);
+        msgs.push(... outputItems);
 
-        let last = output.pop()!;
-        if (last.type == 'function_call') {
-            const tool = findTool(last.name);
-            const args = last.arguments || {};
+        const functionCall = findLastOpenAIOutput(
+            outputItems,
+            (item): item is OpenAI.Responses.ResponseFunctionToolCall => item.type === 'function_call',
+        );
+
+        let messageItem: OpenAI.Responses.ResponseOutputMessage | undefined;
+
+        if (functionCall) {
+            const tool = findTool(functionCall.name);
+            const args = functionCall.arguments || {};
             logToolEvent(
                 OPENAI_NAME,
                 'call',
-                { tool: last.name, args },
+                { tool: functionCall.name, args },
             );
             const result = await tool.handler(args);
             logToolEvent(
                 OPENAI_NAME,
                 'result',
-                { tool: last.name, result },
+                { tool: functionCall.name, result },
             );
             const toolResult: OpenAI.Responses.ResponseFunctionToolCallOutputItem[] = [
                 {
                     type: 'function_call_output',
                     output: JSON.stringify(result),
-                    id: last.id ?? 'fc-' + randomId(),
-                    call_id: last.call_id,
+                    id: functionCall.id ?? 'fc-' + randomId(),
+                    call_id: functionCall.call_id,
                 } satisfies OpenAI.Responses.ResponseFunctionToolCallOutputItem,
             ];
 
@@ -794,19 +830,36 @@ const openaiTurn = async () => {
             if (followup.usage?.total_tokens) {
                 openaiTokens = followup.usage.total_tokens;
             }
-            last = followup.output!.pop()!;
+
+            const followupOutput = followup.output;
+            if (!followupOutput || followupOutput.length === 0) {
+                throw new Error('Empty followup output from OpenAI');
+            }
+
+            msgs.push(... followupOutput);
+
+            messageItem = findLastOpenAIOutput(
+                followupOutput,
+                (item): item is OpenAI.Responses.ResponseOutputMessage => item.type === 'message',
+            );
+        } else {
+            messageItem = findLastOpenAIOutput(
+                outputItems,
+                (item): item is OpenAI.Responses.ResponseOutputMessage => item.type === 'message',
+            );
         }
-        if (last.type != 'message') {
+
+        if (!messageItem) {
             throw new Error('Invalid output from OpenAI');
         }
 
-        const outputMsg = last.content.pop()!;
-        if (outputMsg.type != 'output_text') {
+        const outputMsg = findLastOpenAIMessageContent(messageItem.content);
+        if (!outputMsg) {
             terminationAccepted = true;
             throw new Error('Refused by OpenAI API');
         }
         const outputText = outputMsg.text;
-        if (!outputText || 'string' != typeof outputText) {
+        if (!outputText || typeof outputText !== 'string') {
             throw new Error('OpenAI didn\'t output text');
         }
         messages.push({
@@ -890,16 +943,39 @@ const anthropicTurn = async () => {
             hushFinish = true;
         }
 
-        let output = msg.content.pop()!;
+        const selectContentBlock = <T extends Anthropic.Messages.ContentBlock>(
+            predicate: (block: Anthropic.Messages.ContentBlock) => block is T,
+        ): T | undefined => {
+            for (let i = msg.content.length - 1; i >= 0; i -= 1) {
+                const block = msg.content[i];
+                if (!block) continue;
+                if (predicate(block)) {
+                    return block;
+                }
+            }
+            return undefined;
+        };
+
+        let outputBlock: Anthropic.Messages.ContentBlock | undefined =
+            selectContentBlock(
+                (block): block is Anthropic.Messages.ToolUseBlock => block.type === 'tool_use',
+            )
+            ?? selectContentBlock(
+                (block): block is Anthropic.Messages.TextBlock => block.type === 'text',
+            );
+
+        if (!outputBlock) {
+            throw new Error('Anthropic response missing assistant output');
+        }
 
         msgs.push({
             role: 'assistant',
-            content: [output],
+            content: [outputBlock],
         });
 
-        if ('tool_use' == output.type) {
+        if (outputBlock.type === 'tool_use') {
             const toolResultsBlocks: Anthropic.Messages.ToolResultBlockParam[] = [];
-            const use = output;
+            const use = outputBlock;
             const tool = findTool(use.name);
             logToolEvent(
                 ANTHROPIC_NAME,
@@ -945,14 +1021,29 @@ const anthropicTurn = async () => {
                 tools: anthropicTools,
             });
 
-            output = followup.content.pop()!;
+            const followupText = (() => {
+                for (let i = followup.content.length - 1; i >= 0; i -= 1) {
+                    const block = followup.content[i];
+                    if (!block) continue;
+                    if (block.type === 'text') {
+                        return block;
+                    }
+                }
+                return undefined;
+            })();
+
+            if (!followupText) {
+                throw new Error('Non-text output from Anthropic');
+            }
+
+            outputBlock = followupText;
         }
-        if ('text' != output.type) {
+        if (outputBlock.type !== 'text') {
             throw new Error('Non-text output from Anthropic');
         }
         messages.push({
             name: 'anthropic',
-            content: output.text,
+            content: outputBlock.text,
         });
     } catch (e) {
         anthropicFailureCount += 1;
