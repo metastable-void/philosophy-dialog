@@ -254,6 +254,7 @@ export async function graphRagQueryHandler(
         // 3. Collect all nodes & relationships into JS sets
         const nodeMap = new Map<string, any>();
         const rels: any[] = [];
+        const elementIdToNodeId = new Map<string, string>();
 
         for (const record of expandRes.records) {
             const nodes = record.get("nodes") as any[];
@@ -264,6 +265,12 @@ export async function graphRagQueryHandler(
                 if (!id) continue;
                 if (!nodeMap.has(id)) {
                     nodeMap.set(id, n);
+                    const elementId = typeof n.elementId === 'function'
+                        ? n.elementId()
+                        : n.elementId;
+                    if (elementId) {
+                        elementIdToNodeId.set(String(elementId), id);
+                    }
                 }
             }
 
@@ -293,8 +300,22 @@ export async function graphRagQueryHandler(
         lines.push("");
         lines.push("【関係】");
         for (const r of rels) {
-            const startId = r.startNodeElementId || r.start || "";
-            const endId = r.endNodeElementId || r.end || "";
+            const startElementIdRaw =
+                (typeof r.startNodeElementId === 'function'
+                    ? r.startNodeElementId()
+                    : r.startNodeElementId)
+                ?? r.start
+                ?? "";
+            const endElementIdRaw =
+                (typeof r.endNodeElementId === 'function'
+                    ? r.endNodeElementId()
+                    : r.endNodeElementId)
+                ?? r.end
+                ?? "";
+            const startElementId = String(startElementIdRaw);
+            const endElementId = String(endElementIdRaw);
+            const startId = elementIdToNodeId.get(startElementId) ?? startElementId;
+            const endId = elementIdToNodeId.get(endElementId) ?? endElementId;
             const relType = r.type || r.elementId || "REL";
 
             lines.push(
