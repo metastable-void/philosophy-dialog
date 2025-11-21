@@ -250,10 +250,15 @@ export async function graphRagQueryHandler(
     const maxHopsInt = neo4j.int(maxHops);
     const maxSeedsInt = neo4j.int(maxSeeds);
     const queryText = (args.query ?? '').trim();
+    const rawTerms = (args.query ?? '')
+        .split(/[、，。．\s／\/・,\.]+/)
+        .map(t => t.trim())
+        .filter(t => t.length > 0);
 
-    if (!queryText) {
+    const terms = Array.from(new Set(rawTerms)).filter(t => t.length >= 2);
+    if (terms.length < 1) {
         return {
-            context: "GraphRAG: クエリ文字列が空です。検索したい単語やフレーズを指定してください。",
+            context: `GraphRAG: クエリ「${args.query ?? ''}」から有効な検索語を抽出できませんでした。`,
         };
     }
 
@@ -262,12 +267,14 @@ export async function graphRagQueryHandler(
         const seedRes = await session.run(
             `
             MATCH (n:Node)
-            WHERE toLower(n.text) CONTAINS toLower($q)
-               OR toLower(n.type) CONTAINS toLower($q)
+            WHERE any(term IN $terms WHERE
+                toLower(n.text) CONTAINS toLower(term)
+                OR toLower(n.type) CONTAINS toLower(term)
+            )
             RETURN n
             LIMIT $maxSeeds
             `,
-            { q: queryText, maxSeeds: maxSeedsInt }
+            { terms, maxSeeds }
         );
 
         if (seedRes.records.length === 0) {
@@ -412,7 +419,7 @@ const tools: ToolDefinition[] = [
             properties: {
                 query: {
                     type: "string",
-                    description: "検索したい内容（例: クオリア, 汎心論, 因果閉包性 など）",
+                    description: "スペースで区切られた具体的な概念に対応する単語。検索したい内容（例: クオリア, 汎心論, 因果閉包性 など）。文章ではない。",
                 },
                 max_hops: {
                     type: ["number", "null"],
@@ -896,7 +903,15 @@ const openaiTurn = async () => {
 
             if (functionCall) {
                 const tool = findTool(functionCall.name);
-                const args = functionCall.arguments || {};
+                const rawArgs = functionCall.arguments || {};
+                let args;
+                try {
+                    if ('string' == typeof rawArgs) {
+                        args = JSON.parse(rawArgs);
+                    } else throw undefined;
+                } catch (_e) {
+                    args = rawArgs;
+                }
                 logToolEvent(
                     OPENAI_NAME,
                     'call',
