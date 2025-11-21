@@ -28,7 +28,7 @@ const buildHtml = (title: string, bodyHtml: string) => {
         + `<p>GitHub: <a href='https://github.com/metastable-void/philosophy-dialog'>metastable-void/philosophy-dialog</a></p>`
         + `<p>Experiments by <a href='https://www.mori.yuka.org/'>真空/Yuka MORI</a></p>`
         + `</footer>`;
-    html += `</body></html>'`;
+    html += `</body></html>`;
     return html;
 }
 
