@@ -7,8 +7,12 @@ import * as dotenv from 'dotenv';
 import { OpenAI } from 'openai';
 import openaiTokenCounter from "openai-gpt-token-counter";
 import Anthropic from "@anthropic-ai/sdk";
+import neo4j from "neo4j-driver";
 
 import { output_to_html } from './html.js';
+
+
+type ModelSide = 'openai' | 'anthropic';
 
 const OPENAI_MODEL = 'gpt-5.1';
 const ANTHROPIC_MODEL = 'claude-haiku-4-5';
@@ -21,7 +25,117 @@ const CLAUDE_HAIKU_4_5_MAX = 200000;
 
 const SLEEP_BY_STEP = 1000;
 
+export interface ConversationSummary {
+    topics: string[];
+    japanese_summary: string;
+    english_summary?: string;
+    key_claims: {
+        speaker: ModelSide;
+        text: string;
+    }[];
+    questions: string[];
+    agreements: string[];
+    disagreements: string[];
+}
+
+// Graph representation
+export interface ConversationGraph {
+    nodes: {
+        id: string;
+        type: "concept" | "claim" | "question" | "example" | "counterexample";
+        text: string;
+        speaker?: "openai" | "anthropic";
+    }[];
+    edges: {
+        source: string; // node id
+        target: string; // node id
+        type: "supports" | "contradicts" | "elaborates" | "responds_to" | "refers_to";
+    }[];
+}
+
+interface Message {
+    name: ModelSide;
+    content: string;
+}
+
+interface RawMessageOpenAi {
+    role: 'assistant' | 'user' | 'system';
+    content: string;
+}
+
 dotenv.config();
+
+const neo4jDriver = neo4j.driver(
+    "neo4j://localhost:7687",
+    neo4j.auth.basic("neo4j", process.env.NEO4J_PASSWORD || "neo4j"),
+    {
+        /* optional tuning */
+    }
+);
+
+export async function writeGraphToNeo4j(
+    runId: string,
+    graph: ConversationGraph
+): Promise<void> {
+    const session = neo4jDriver.session();
+
+    try {
+        // 1. Run node
+        await session.run(
+            `
+            MERGE (r:Run {id: $runId})
+            ON CREATE SET r.created_at = datetime()
+            `,
+            { runId }
+        );
+
+        // 2. Nodes
+        for (const node of graph.nodes) {
+            await session.run(
+                `
+                MERGE (n:Node {id: $id})
+                SET n.text = $text,
+                    n.type = $type,
+                    n.speaker = $speaker
+                WITH n
+                MATCH (r:Run {id: $runId})
+                MERGE (n)-[:IN_RUN]->(r)
+                `,
+                {
+                    id: node.id,
+                    text: node.text,
+                    type: node.type,
+                    speaker: node.speaker ?? null,
+                    runId,
+                }
+            );
+        }
+
+        // 3. Edges (as relationship types)
+        for (const edge of graph.edges) {
+            // Sanity: only allow known relationship types
+            const relType = edge.type.toUpperCase(); // SUPPORTS, CONTRADICTS, ...
+
+            if (!["SUPPORTS", "CONTRADICTS", "ELABORATES", "RESPONDS_TO", "REFERS_TO"].includes(relType)) {
+                continue;
+            }
+
+            const cypher = `
+                MATCH (a:Node {id: $source})
+                MATCH (b:Node {id: $target})
+                MERGE (a)-[r:${relType}]->(b)
+                RETURN r
+            `;
+
+            await session.run(cypher, {
+                source: edge.source,
+                target: edge.target,
+            });
+        }
+    } finally {
+        await session.close();
+    }
+}
 
 fs.mkdirSync('./logs', {
     recursive: true,
@@ -42,7 +156,7 @@ const getDate = () => {
     return `${YYYY}${MM}${DD}-${hh}${mm}${ss}`;
 };
 
-export type ToolName = "terminate_dialog";
+export type ToolName = "terminate_dialog" | "graph_rag_query";
 
 export interface ToolDefinition<TArgs = any, TResult = any, TName = ToolName> {
     name: TName;
@@ -60,11 +174,137 @@ type TerminateDialogResult = {
     termination_accepted: true,
 };
 
+// GraphRAG tool implementation
+type GraphRagQueryArgs = {
+    query: string;
+    max_hops?: number;   // how far to expand from seed nodes
+    max_seeds?: number;  // how many seed nodes to start from
+};
+
+type GraphRagQueryResult = {
+    context: string;     // textual summary for the model to use
+};
+
 async function terminateDialogHandler(args: TerminateDialogArgs): Promise<TerminateDialogResult> {
     terminationAccepted = true;
     return {
         termination_accepted: true,
     };
+}
+
+export async function graphRagQueryHandler(
+    args: GraphRagQueryArgs
+): Promise<GraphRagQueryResult> {
+    const session = neo4jDriver.session();
+
+    const maxHops = args.max_hops ?? 2;
+    const maxSeeds = args.max_seeds ?? 5;
+
+    try {
+        // 1. Find seed nodes by simple text search
+        const seedRes = await session.run(
+            `
+            MATCH (n:Node)
+            WHERE toLower(n.text) CONTAINS toLower($q)
+               OR toLower(n.type) CONTAINS toLower($q)
+            RETURN n
+            LIMIT $maxSeeds
+            `,
+            { q: args.query, maxSeeds }
+        );
+
+        if (seedRes.records.length === 0) {
+            return {
+                context: `知識グラフ内に、クエリ「${args.query}」に明確に関連するノードは見つかりませんでした。`,
+            };
+        }
+
+        // Collect seed node IDs
+        const seedIds = seedRes.records.map((rec) => {
+            const node = rec.get("n");
+            return (node.properties.id as string) || "";
+        }).filter(Boolean);
+
+        // 2. Expand subgraph around the seeds using APOC (subgraphAll)
+        const expandRes = await session.run(
+            `
+            MATCH (seed:Node)
+            WHERE seed.id IN $seedIds
+            CALL apoc.path.subgraphAll(seed, {
+                maxLevel: $maxHops
+            })
+            YIELD nodes, relationships
+            RETURN nodes, relationships
+            `,
+            {
+                seedIds,
+                maxHops,
+            }
+        );
+
+        if (expandRes.records.length === 0) {
+            return {
+                context: `ノードは見つかりましたが、半径 ${maxHops} ホップ以内に広がるサブグラフは取得できませんでした。`,
+            };
+        }
+
+        // 3. Collect all nodes & relationships into JS sets
+        const nodeMap = new Map<string, any>();
+        const rels: any[] = [];
+
+        for (const record of expandRes.records) {
+            const nodes = record.get("nodes") as any[];
+            const relationships = record.get("relationships") as any[];
+
+            for (const n of nodes) {
+                const id = n.properties.id as string;
+                if (!id) continue;
+                if (!nodeMap.has(id)) {
+                    nodeMap.set(id, n);
+                }
+            }
+
+            for (const r of relationships) {
+                rels.push(r);
+            }
+        }
+
+        // 4. Build a human-readable context string
+        const lines: string[] = [];
+
+        lines.push(`GraphRAG: クエリ「${args.query}」に関連するサブグラフ要約:`);
+        lines.push("");
+
+        // Nodes
+        lines.push("【ノード】");
+        for (const [id, n] of nodeMap.entries()) {
+            const type = (n.properties.type as string) || "unknown";
+            const speaker = (n.properties.speaker as string) || "-";
+            const text = (n.properties.text as string) || "";
+            lines.push(
+                `- [${id}] type=${type}, speaker=${speaker}: ${text}`
+            );
+        }
+
+        // Relationships
+        lines.push("");
+        lines.push("【関係】");
+        for (const r of rels) {
+            const startId = r.startNodeElementId || r.start || "";
+            const endId = r.endNodeElementId || r.end || "";
+            const relType = r.type || r.elementId || "REL";
+
+            lines.push(
+                `- (${startId}) -[:${relType}]-> (${endId})`
+            );
+        }
+
+        return {
+            context: lines.join("\n"),
+        };
+    } finally {
+        await session.close();
+    }
 }
 
 const tools: ToolDefinition[] = [
@@ -81,6 +321,32 @@ const tools: ToolDefinition[] = [
             required: [],
         },
         handler: terminateDialogHandler,
+    },
+    {
+        name: "graph_rag_query",
+        description:
+            "過去の対話から構成された知識グラフに対して問い合わせを行い、" +
+            "関連する概念・主張・論点のサブグラフを要約して返します。" +
+            "過去の議論や関連する論点を思い出したいときに使ってください。",
+        parameters: {
+            type: "object",
+            properties: {
+                query: {
+                    type: "string",
+                    description: "検索したい内容（例: クオリア, 汎心論, 因果閉包性 など）",
+                },
+                max_hops: {
+                    type: "number",
+                    description: "サブグラフ拡張の最大ホップ数（省略時 2）",
+                },
+                max_seeds: {
+                    type: "number",
+                    description: "初期シードノード数の上限（省略時 5）",
+                },
+            },
+            required: ["query"],
+        },
+        handler: graphRagQueryHandler,
     },
 ];
 
@@ -115,7 +381,8 @@ function findTool(name: string) {
 const openaiTools = toOpenAITools(tools);
 const anthropicTools = toAnthropicTools(tools);
 
-const LOG_FILE_NAME = `./logs/${getDate()}.log.jsonl`;
+const CONVERSATION_ID = getDate();
+const LOG_FILE_NAME = `./logs/${CONVERSATION_ID}.log.jsonl`;
 const logFp = fs.openSync(LOG_FILE_NAME, 'a');
 
 const log = (name: string, msg: string) => {
@@ -143,7 +410,9 @@ const buildSystemInstruction = (name: string, additional?: string) => {
 - 心の哲学について
 - 物理学の哲学について
 
-なるべく、新規性のある話題を心掛けてください。
+なるべく、新規性のある話題を心掛けてください。必要であれば、Web検索をして文献を漁っても構いませんが、独自性のある議論をしてください。
+
+注意: 相手の話の要点と、現在の話題の筋を理解し、話が逸れすぎないように注意してください。
 `;
     if (additional) {
         prompt += `\n\n${additional}\n`;
@@ -151,20 +420,8 @@ const buildSystemInstruction = (name: string, additional?: string) => {
     return prompt;
 }
 
-const openAiClient = new OpenAI({});
+const openaiClient = new OpenAI({});
 const anthropicClient = new Anthropic({});
-
-type ModelSide = 'openai' | 'anthropic';
-
-interface Message {
-    name: ModelSide;
-    content: string;
-}
-
-interface RawMessageOpenAi {
-    role: 'assistant' | 'user' | 'system';
-    content: string;
-}
 
 const randomBoolean = (): boolean => {
     const b = new Uint8Array(1);
@@ -175,6 +432,197 @@ const randomBoolean = (): boolean => {
 const startingSide: ModelSide = randomBoolean() ? 'anthropic' : 'openai';
 
 const messages: Message[] = [];
+
+function buildTranscript(messages: Message[]): string {
+  // Simple text transcript like:
+  // [GPT 5.1]: ...
+  // [Claude Haiku 4.5]: ...
+  return messages
+    .map(m => `[${m.name === "openai" ? OPENAI_NAME : ANTHROPIC_NAME}]:\n${m.content}`)
+    .join("\n\n\n\n");
+}
+async function summarizeConversation(messages: Message[]): Promise<ConversationSummary> {
+    const transcript = buildTranscript(messages);
+
+    const response = await openaiClient.responses.create({
+        model: OPENAI_MODEL, // e.g. "gpt-5.1"
+        input: [
+            {
+            role: "user",
+            content:
+                "以下は2つのAIモデルの哲学対話の完全な記録です。" +
+                "この対話の全体像を理解し、指定されたJSONスキーマに従って要約してください。\n\n" +
+                transcript,
+            },
+        ],
+        max_output_tokens: 2048,
+        response_format: {
+            type: "json_schema",
+            json_schema: {
+            name: "conversation_summary",
+            schema: {
+                type: "object",
+                properties: {
+                    topics: {
+                        type: "array",
+                        items: { type: "string" },
+                        description: "対話で扱われた主要な話題の短いラベル一覧（日本語）",
+                    },
+                    japanese_summary: {
+                        type: "string",
+                        description: "対話全体の日本語での要約（1〜3段落程度）",
+                    },
+                    english_summary: {
+                        type: "string",
+                        description: "必要であれば、英語での簡潔な要約",
+                    },
+                    key_claims: {
+                        type: "array",
+                        items: {
+                        type: "object",
+                        properties: {
+                            speaker: {
+                                type: "string",
+                                enum: ["openai", "anthropic"],
+                                description: "モデルのベンダー識別名",
+                            },
+                            text: {
+                                type: "string",
+                            },
+                        },
+                        required: ["speaker", "text"],
+                        },
+                    },
+                    questions: {
+                        type: "array",
+                        items: { type: "string" },
+                    },
+                    agreements: {
+                        type: "array",
+                        items: { type: "string" },
+                    },
+                    disagreements: {
+                        type: "array",
+                        items: { type: "string" },
+                    },
+                },
+                required: ["topics", "japanese_summary", "key_claims", "questions", "agreements", "disagreements"],
+                additionalProperties: false,
+            },
+            strict: true,
+            },
+        },
+    } as OpenAI.Responses.ResponseCreateParamsNonStreaming);
+
+    // Responses API with JSON schema: you get a *single* JSON object as output_text
+    const jsonText = response.output_text;
+    if (typeof jsonText !== "string") {
+        throw new Error("Unexpected non-string JSON output from summary call");
+    }
+
+    return JSON.parse(jsonText) as ConversationSummary;
+}
+
+async function extractGraphFromSummary(
+    summary: ConversationSummary
+): Promise<ConversationGraph> {
+
+    const response = await openaiClient.responses.create(
+        {
+            model: OPENAI_MODEL,
+            input: [
+                {
+                    role: "user",
+                    content:
+                        "以下は哲学対話の要約と構造情報です。" +
+                        "これを基に、知識グラフのノードとエッジを抽出してください。\n" +
+                        "抽象的すぎるノードは避け、対話中に実際に現れた" +
+                        "具体的な主張・概念・問いをもとに構築してください。\n\n" +
+                        JSON.stringify(summary, null, 2),
+                },
+            ],
+            max_output_tokens: 2048,
+
+            // `response_format` is supported by the API but missing from TS types.
+            // So we cast the whole object to ResponseCreateParamsNonStreaming.
+            response_format: {
+                type: "json_schema",
+                json_schema: {
+                    name: "conversation_graph",
+                    schema: {
+                        type: "object",
+                        properties: {
+                            nodes: {
+                                type: "array",
+                                items: {
+                                    type: "object",
+                                    properties: {
+                                        id: { type: "string" },
+                                        type: {
+                                            type: "string",
+                                            enum: [
+                                                "concept",
+                                                "claim",
+                                                "question",
+                                                "example",
+                                                "counterexample",
+                                            ],
+                                        },
+                                        text: { type: "string" },
+                                        speaker: {
+                                            type: "string",
+                                            enum: ["openai", "anthropic"],
+                                            nullable: true,
+                                        },
+                                    },
+                                    required: ["id", "type", "text"],
+                                    additionalProperties: false,
+                                },
+                            },
+                            edges: {
+                                type: "array",
+                                items: {
+                                    type: "object",
+                                    properties: {
+                                        source: { type: "string" },
+                                        target: { type: "string" },
+                                        type: {
+                                            type: "string",
+                                            enum: [
+                                                "supports",
+                                                "contradicts",
+                                                "elaborates",
+                                                "responds_to",
+                                                "refers_to",
+                                            ],
+                                        },
+                                    },
+                                    required: ["source", "target", "type"],
+                                    additionalProperties: false,
+                                },
+                            },
+                        },
+                        required: ["nodes", "edges"],
+                        additionalProperties: false,
+                    },
+                    strict: true,
+                },
+            },
+
+        } as OpenAI.Responses.ResponseCreateParamsNonStreaming
+    );
+
+    // ----------------------------------------------
+    // Extract JSON output
+    // ----------------------------------------------
+    const jsonText = response.output_text;
+    if (typeof jsonText !== "string") {
+        throw new Error("Expected JSON string in response.output_text for graph extraction");
+    }
+
+    return JSON.parse(jsonText) as ConversationGraph;
+}
+
 
 switch (startingSide) {
     case 'anthropic': {
@@ -210,7 +658,7 @@ const randomId = () => randomBytes(12).toString('base64url');
 
 let openaiFailureCount = 0;
 
-const openAiTurn = async () => {
+const openaiTurn = async () => {
     const msgs: OpenAI.Responses.ResponseInput = messages.map(msg => {
         if (msg.name == 'anthropic') {
             return {role: 'user', content: msg.content};
@@ -229,7 +677,7 @@ const openAiTurn = async () => {
                 content: `${OPENAI_NAME}さん、司会です。あなたがたのコンテキスト長が限界に近づいているようです。今までの議論を短くまとめ、お別れの挨拶をしてください。`,
             });
         }
-        const response = await openAiClient.responses.create({
+        const response = await openaiClient.responses.create({
             model: OPENAI_MODEL,
             max_output_tokens: 8192,
             temperature: 1.0,
@@ -239,7 +687,12 @@ const openAiTurn = async () => {
             ),
             input: msgs,
             tool_choice: 'auto',
-            tools: openaiTools,
+            tools: [
+                ... openaiTools,
+                {
+                    type: "web_search",
+                }
+            ],
         });
 
         if (response.usage?.total_tokens) {
@@ -280,7 +733,7 @@ const openAiTurn = async () => {
 
             msgs.push(... toolResult);
 
-            const followup = await openAiClient.responses.create({
+            const followup = await openaiClient.responses.create({
                 model: OPENAI_MODEL,
                 max_output_tokens: 8192,
                 temperature: 1.0,
@@ -359,7 +812,13 @@ const anthropicTurn = async () => {
             ),
             messages: msgs,
             tool_choice: { type: 'auto' },
-            tools: anthropicTools,
+            tools: [
+                ... anthropicTools,
+                {
+                    "type": "web_search_20250305",
+                    "name": "web_search"
+                },
+            ],
             thinking: {
                 type: 'enabled',
                 budget_tokens: 1024,
@@ -464,13 +923,29 @@ const print = (text: string) => new Promise<void>((res, rej) => {
 
 let finishTurnCount = 0;
 
-const finish = () => {
+const finish = async () => {
     log(
         '司会',
         (hushFinish ? 'みなさんのコンテキスト長が限界に近づいてきたので、' : 'モデルの一方が議論が熟したと判断したため、')
         + 'このあたりで哲学対話を閉じさせていただこうと思います。'
         + 'ありがとうございました。'
     );
+
+    try {
+        const summary = await summarizeConversation(messages);
+        log("POSTPROC_SUMMARY", JSON.stringify(summary, null, 2));
+
+        const graph = await extractGraphFromSummary(summary);
+        log("POSTPROC_GRAPH", JSON.stringify(graph, null, 2));
+
+        const runId = CONVERSATION_ID;
+        await writeGraphToNeo4j(runId, graph);
+
+        log("POSTPROC_NEO4J", "Graph written to Neo4j");
+    } catch (e) {
+        log("POSTPROC_ERROR", String(e));
+    }
+
     log(
         'EOF',
         JSON.stringify({
@@ -484,6 +959,8 @@ const finish = () => {
     );
     fs.closeSync(logFp);
     output_to_html(LOG_FILE_NAME);
+
+
     process.exit(0);
 };
 
@@ -494,14 +971,14 @@ log(`${startingSide == 'anthropic' ? ANTHROPIC_NAME : OPENAI_NAME} (initial prom
 while (true) {
     if (started || startingSide == 'anthropic') {
         started = true;
-        await openAiTurn();
+        await openaiTurn();
         if (hushFinish) {
             finishTurnCount += 1;
         }
         log(OPENAI_NAME, messages[messages.length - 1]!.content);
 
         if (finishTurnCount >= 2 || terminationAccepted) {
-            finish();
+            await finish();
             break;
         }
 
@@ -517,7 +994,7 @@ while (true) {
     log(ANTHROPIC_NAME, messages[messages.length - 1]!.content);
 
     if (finishTurnCount >= 2 || terminationAccepted) {
-        finish();
+        await finish();
         break;
     }
 
