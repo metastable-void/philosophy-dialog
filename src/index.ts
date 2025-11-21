@@ -637,6 +637,7 @@ async function extractGraphFromSummary(
                                     },
                                     required: ["id", "type", "text"],
                                     additionalProperties: false,
+                                    strict: false,
                                 },
                             },
                             edges: {
