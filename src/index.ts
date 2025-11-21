@@ -746,6 +746,9 @@ const openaiTurn = async () => {
                 hushFinish ? undefined : DEFAULT_ADD_PROMPT,
             ),
             input: msgs,
+            reasoning: {
+                effort: 'medium',
+            },
             tool_choice: 'auto',
             tools: [
                 ... openaiTools,
@@ -800,13 +803,13 @@ const openaiTurn = async () => {
                 'result',
                 { tool: functionCall.name, result },
             );
-            const toolResult: OpenAI.Responses.ResponseFunctionToolCallOutputItem[] = [
+            const toolResult: OpenAI.Responses.ResponseInputItem.FunctionCallOutput[] = [
                 {
                     type: 'function_call_output',
                     output: JSON.stringify(result),
-                    id: functionCall.id ?? 'fc-' + randomId(),
+                    // id: functionCall.id ?? 'fc-' + randomId(), // this is not something we populate
                     call_id: functionCall.call_id,
-                } satisfies OpenAI.Responses.ResponseFunctionToolCallOutputItem,
+                } satisfies OpenAI.Responses.ResponseInputItem.FunctionCallOutput,
             ];
 
             msgs.push(... toolResult);
@@ -825,6 +828,9 @@ const openaiTurn = async () => {
                     extraInstruction,
                 ),
                 input: msgs,
+                reasoning: {
+                    effort: 'medium',
+                },
                 tool_choice: 'auto',
                 tools: openaiTools,
             });
