@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 
 import { webcrypto as crypto, randomBytes } from 'node:crypto';
 import * as fs from 'node:fs';

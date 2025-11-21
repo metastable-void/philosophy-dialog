@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 
 import * as fs from 'node:fs';
 import { output_to_html } from './html.js';
