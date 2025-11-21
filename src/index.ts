@@ -336,12 +336,12 @@ const tools: ToolDefinition[] = [
                     description: "検索したい内容（例: クオリア, 汎心論, 因果閉包性 など）",
                 },
                 max_hops: {
-                    type: "number",
+                    type: ["number", "null"],
                     description: "サブグラフ拡張の最大ホップ数（省略時 2）",
                     nullable: true,
                 },
                 max_seeds: {
-                    type: "number",
+                    type: ["number", "null"],
                     description: "初期シードノード数の上限（省略時 5）",
                     nullable: true,
                 },
