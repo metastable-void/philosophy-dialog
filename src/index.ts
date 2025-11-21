@@ -247,6 +247,8 @@ export async function graphRagQueryHandler(
 
     const maxHops = sanitizePositiveInt(args.max_hops, 2);
     const maxSeeds = sanitizePositiveInt(args.max_seeds, 5);
+    const maxHopsInt = neo4j.int(maxHops);
+    const maxSeedsInt = neo4j.int(maxSeeds);
     const queryText = (args.query ?? '').trim();
 
     if (!queryText) {
@@ -265,7 +267,7 @@ export async function graphRagQueryHandler(
             RETURN n
             LIMIT $maxSeeds
             `,
-            { q: queryText, maxSeeds }
+            { q: queryText, maxSeeds: maxSeedsInt }
         );
 
         if (seedRes.records.length === 0) {
@@ -293,7 +295,7 @@ export async function graphRagQueryHandler(
             `,
             {
                 seedIds,
-                maxHops,
+                maxHops: maxHopsInt,
             }
         );
 
