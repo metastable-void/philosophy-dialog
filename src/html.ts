@@ -98,9 +98,9 @@ export const output_to_html = (jsonl_path: string) => {
                     cl += 'special';
                 } else if (msg.name.endsWith(' (thinking)')) {
                     cl += ' thinking';
-                } if (msg.name.endsWith(' (tool call)')) {
+                } else if (msg.name.endsWith(' (tool call)')) {
                     cl += ' tool-call';
-                } if (msg.name.endsWith(' (tool result)')) {
+                } else if (msg.name.endsWith(' (tool result)')) {
                     cl += ' tool-result';
                 } else {
                     side = side == 0 ? 1 : 0;
