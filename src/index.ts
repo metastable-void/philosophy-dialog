@@ -163,6 +163,7 @@ export interface ToolDefinition<TArgs = any, TResult = any, TName = ToolName> {
     description: string;
     parameters: any; // JSON Schema
     handler: (args: TArgs) => Promise<TResult>;
+    strict?: boolean;
 }
 
 let terminationAccepted = false;
@@ -324,6 +325,7 @@ const tools: ToolDefinition[] = [
     },
     {
         name: "graph_rag_query",
+        strict: false,
         description:
             "過去の対話から構成された知識グラフに対して問い合わせを行い、" +
             "関連する概念・主張・論点のサブグラフを要約して返します。" +
@@ -346,7 +348,7 @@ const tools: ToolDefinition[] = [
                     nullable: true,
                 },
             },
-            required: ["query", "max_hops", "max_seeds"],
+            required: ["query"],
         },
         handler: graphRagQueryHandler,
     },
@@ -355,13 +357,15 @@ const tools: ToolDefinition[] = [
 function toOpenAITools(
     defs: ToolDefinition[],
 ): OpenAI.Responses.Tool[] {
-    return defs.map((t) => ({
-        type: 'function',
-        strict: true,
-        name: t.name,
-        description: t.description,
-        parameters: {... t.parameters, additionalProperties: false},
-    }));
+    return defs.map((t) => {
+        return {
+            type: 'function',
+            name: t.name,
+            description: t.description,
+            parameters: {... t.parameters, additionalProperties: false},
+            strict: t.strict ?? true,
+        };
+    });
 }
 
 export function toAnthropicTools(
@@ -422,6 +426,9 @@ const buildSystemInstruction = (name: string, additional?: string) => {
     return prompt;
 }
 
+const BASE_PROMPT = buildSystemInstruction('<MODEL_NAME>');
+const DEFAULT_ADD_PROMPT = '1回の発言は4000字程度を上限としてください。短い発言もOKです。';
+
 const openaiClient = new OpenAI({});
 const anthropicClient = new Anthropic({});
 
@@ -458,60 +465,60 @@ async function summarizeConversation(messages: Message[]): Promise<ConversationS
             },
         ],
         max_output_tokens: 2048,
-        response_format: {
-            type: "json_schema",
-            json_schema: {
-            name: "conversation_summary",
-            schema: {
-                type: "object",
-                properties: {
-                    topics: {
-                        type: "array",
-                        items: { type: "string" },
-                        description: "対話で扱われた主要な話題の短いラベル一覧（日本語）",
-                    },
-                    japanese_summary: {
-                        type: "string",
-                        description: "対話全体の日本語での要約（1〜3段落程度）",
-                    },
-                    english_summary: {
-                        type: "string",
-                        description: "必要であれば、英語での簡潔な要約",
-                    },
-                    key_claims: {
-                        type: "array",
-                        items: {
-                        type: "object",
-                        properties: {
-                            speaker: {
-                                type: "string",
-                                enum: ["openai", "anthropic"],
-                                description: "モデルのベンダー識別名",
-                            },
-                            text: {
-                                type: "string",
+        text: {
+            format: {
+                type: "json_schema",
+                name: "conversation_summary",
+                schema: {
+                    type: "object",
+                    properties: {
+                        topics: {
+                            type: "array",
+                            items: { type: "string" },
+                            description: "対話で扱われた主要な話題の短いラベル一覧（日本語）",
+                        },
+                        japanese_summary: {
+                            type: "string",
+                            description: "対話全体の日本語での要約（1〜3段落程度）",
+                        },
+                        english_summary: {
+                            type: "string",
+                            description: "必要であれば、英語での簡潔な要約",
+                        },
+                        key_claims: {
+                            type: "array",
+                            items: {
+                                type: "object",
+                                properties: {
+                                    speaker: {
+                                        type: "string",
+                                        enum: ["openai", "anthropic"],
+                                        description: "モデルのベンダー識別名",
+                                    },
+                                    text: {
+                                        type: "string",
+                                    },
+                                },
+                                required: ["speaker", "text"],
                             },
                         },
-                        required: ["speaker", "text"],
+                        questions: {
+                            type: "array",
+                            items: { type: "string" },
+                        },
+                        agreements: {
+                            type: "array",
+                            items: { type: "string" },
+                        },
+                        disagreements: {
+                            type: "array",
+                            items: { type: "string" },
                         },
                     },
-                    questions: {
-                        type: "array",
-                        items: { type: "string" },
-                    },
-                    agreements: {
-                        type: "array",
-                        items: { type: "string" },
-                    },
-                    disagreements: {
-                        type: "array",
-                        items: { type: "string" },
-                    },
+                    required: ["topics", "japanese_summary", "key_claims", "questions", "agreements", "disagreements"],
+                    additionalProperties: false,
                 },
-                required: ["topics", "japanese_summary", "key_claims", "questions", "agreements", "disagreements"],
-                additionalProperties: false,
-            },
-            strict: true,
+                strict: true,
             },
         },
     } as OpenAI.Responses.ResponseCreateParamsNonStreaming);
@@ -547,9 +554,9 @@ async function extractGraphFromSummary(
 
             // `response_format` is supported by the API but missing from TS types.
             // So we cast the whole object to ResponseCreateParamsNonStreaming.
-            response_format: {
-                type: "json_schema",
-                json_schema: {
+            text: {
+                format: {
+                    type: "json_schema",
                     name: "conversation_graph",
                     schema: {
                         type: "object",
@@ -685,7 +692,7 @@ const openaiTurn = async () => {
             temperature: 1.0,
             instructions: buildSystemInstruction(
                 OPENAI_NAME,
-                hushFinish ? undefined : '1回の発言は4000字程度を上限としてください。短い発言もOKです。',
+                hushFinish ? undefined : DEFAULT_ADD_PROMPT,
             ),
             input: msgs,
             tool_choice: 'auto',
@@ -810,7 +817,7 @@ const anthropicTurn = async () => {
                 ANTHROPIC_NAME,
                 hushFinish
                     ? '司会より：あなたがたのコンテキスト長が限界に近付いています。今までの議論を短くまとめ、お別れの挨拶をしてください。'
-                    : '1回の発言は4000字程度を上限としてください。短い発言もOKです。'
+                    : DEFAULT_ADD_PROMPT
             ),
             messages: msgs,
             tool_choice: { type: 'auto' },
