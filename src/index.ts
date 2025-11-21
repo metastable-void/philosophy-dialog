@@ -546,6 +546,7 @@ async function summarizeConversation(messages: Message[]): Promise<ConversationS
                                     },
                                 },
                                 required: ["speaker", "text"],
+                                additionalProperties: false,
                             },
                         },
                         questions: {
