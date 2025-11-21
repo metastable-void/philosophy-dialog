@@ -777,105 +777,97 @@ const openaiTurn = async () => {
             );
         }
 
-        const outputItems = response.output;
-        if (!outputItems || outputItems.length === 0) {
-            throw new Error('Empty output from OpenAI');
-        }
+        let currentOutput = response.output;
 
-        msgs.push(... outputItems);
+        while (true) {
+            if (!currentOutput || currentOutput.length === 0) {
+                throw new Error('Empty output from OpenAI');
+            }
 
-        const functionCall = findLastOpenAIOutput(
-            outputItems,
-            (item): item is OpenAI.Responses.ResponseFunctionToolCall => item.type === 'function_call',
-        );
+            msgs.push(... currentOutput);
 
-        let messageItem: OpenAI.Responses.ResponseOutputMessage | undefined;
-
-        if (functionCall) {
-            const tool = findTool(functionCall.name);
-            const args = functionCall.arguments || {};
-            logToolEvent(
-                OPENAI_NAME,
-                'call',
-                { tool: functionCall.name, args },
+            const functionCall = findLastOpenAIOutput(
+                currentOutput,
+                (item): item is OpenAI.Responses.ResponseFunctionToolCall => item.type === 'function_call',
             );
-            const result = await tool.handler(args);
-            logToolEvent(
-                OPENAI_NAME,
-                'result',
-                { tool: functionCall.name, result },
-            );
-            const toolResult: OpenAI.Responses.ResponseInputItem.FunctionCallOutput[] = [
-                {
-                    type: 'function_call_output',
-                    output: JSON.stringify(result),
-                    // id: functionCall.id ?? 'fc-' + randomId(), // this is not something we populate
-                    call_id: functionCall.call_id,
-                } satisfies OpenAI.Responses.ResponseInputItem.FunctionCallOutput,
-            ];
 
-            msgs.push(... toolResult);
-
-            const extraInstruction =
-                tool.name === "terminate_dialog"
-                    ? TERMINATE_ADD_PROMPT
-                    : (hushFinish ? undefined : DEFAULT_ADD_PROMPT);
-            
-            const followup = await openaiClient.responses.create({
-                model: OPENAI_MODEL,
-                max_output_tokens: 8192,
-                temperature: 1.0,
-                instructions: buildSystemInstruction(
+            if (functionCall) {
+                const tool = findTool(functionCall.name);
+                const args = functionCall.arguments || {};
+                logToolEvent(
                     OPENAI_NAME,
-                    extraInstruction,
-                ),
-                input: msgs,
-                reasoning: {
-                    effort: 'medium',
-                },
-                tool_choice: 'auto',
-                tools: openaiTools,
+                    'call',
+                    { tool: functionCall.name, args },
+                );
+                const result = await tool.handler(args);
+                logToolEvent(
+                    OPENAI_NAME,
+                    'result',
+                    { tool: functionCall.name, result },
+                );
+                const toolResult: OpenAI.Responses.ResponseInputItem.FunctionCallOutput[] = [
+                    {
+                        type: 'function_call_output',
+                        output: JSON.stringify(result),
+                        call_id: functionCall.call_id,
+                    } satisfies OpenAI.Responses.ResponseInputItem.FunctionCallOutput,
+                ];
+
+                msgs.push(... toolResult);
+
+                const extraInstruction =
+                    tool.name === "terminate_dialog"
+                        ? TERMINATE_ADD_PROMPT
+                        : (hushFinish ? undefined : DEFAULT_ADD_PROMPT);
+                
+                const followup = await openaiClient.responses.create({
+                    model: OPENAI_MODEL,
+                    max_output_tokens: 8192,
+                    temperature: 1.0,
+                    instructions: buildSystemInstruction(
+                        OPENAI_NAME,
+                        extraInstruction,
+                    ),
+                    input: msgs,
+                    reasoning: {
+                        effort: 'medium',
+                    },
+                    tool_choice: 'auto',
+                    tools: openaiTools,
+                });
+
+                if (followup.usage?.total_tokens) {
+                    openaiTokens = followup.usage.total_tokens;
+                }
+
+                currentOutput = followup.output;
+                continue;
+            }
+
+            const messageItem = findLastOpenAIOutput(
+                currentOutput,
+                (item): item is OpenAI.Responses.ResponseOutputMessage => item.type === 'message',
+            );
+
+            if (!messageItem) {
+                throw new Error('Invalid output from OpenAI');
+            }
+
+            const outputMsg = findLastOpenAIMessageContent(messageItem.content);
+            if (!outputMsg) {
+                terminationAccepted = true;
+                throw new Error('Refused by OpenAI API');
+            }
+            const outputText = outputMsg.text;
+            if (!outputText || typeof outputText !== 'string') {
+                throw new Error('OpenAI didn\'t output text');
+            }
+            messages.push({
+                name: 'openai',
+                content: outputText,
             });
-
-            if (followup.usage?.total_tokens) {
-                openaiTokens = followup.usage.total_tokens;
-            }
-
-            const followupOutput = followup.output;
-            if (!followupOutput || followupOutput.length === 0) {
-                throw new Error('Empty followup output from OpenAI');
-            }
-
-            msgs.push(... followupOutput);
-
-            messageItem = findLastOpenAIOutput(
-                followupOutput,
-                (item): item is OpenAI.Responses.ResponseOutputMessage => item.type === 'message',
-            );
-        } else {
-            messageItem = findLastOpenAIOutput(
-                outputItems,
-                (item): item is OpenAI.Responses.ResponseOutputMessage => item.type === 'message',
-            );
+            break;
         }
-
-        if (!messageItem) {
-            throw new Error('Invalid output from OpenAI');
-        }
-
-        const outputMsg = findLastOpenAIMessageContent(messageItem.content);
-        if (!outputMsg) {
-            terminationAccepted = true;
-            throw new Error('Refused by OpenAI API');
-        }
-        const outputText = outputMsg.text;
-        if (!outputText || typeof outputText !== 'string') {
-            throw new Error('OpenAI didn\'t output text');
-        }
-        messages.push({
-            name: 'openai',
-            content: outputText,
-        });
     } catch (e) {
         openaiFailureCount += 1;
         console.error(e);
@@ -966,13 +958,15 @@ const anthropicTurn = async () => {
             return undefined;
         };
 
+        const latestTextBlock = selectContentBlock(
+            (block): block is Anthropic.Messages.TextBlock => block.type === 'text',
+        );
+        const latestToolUseBlock = selectContentBlock(
+            (block): block is Anthropic.Messages.ToolUseBlock => block.type === 'tool_use',
+        );
+
         let outputBlock: Anthropic.Messages.ContentBlock | undefined =
-            selectContentBlock(
-                (block): block is Anthropic.Messages.ToolUseBlock => block.type === 'tool_use',
-            )
-            ?? selectContentBlock(
-                (block): block is Anthropic.Messages.TextBlock => block.type === 'text',
-            );
+            latestTextBlock ?? latestToolUseBlock;
 
         if (!outputBlock) {
             throw new Error('Anthropic response missing assistant output');
