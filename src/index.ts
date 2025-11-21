@@ -557,6 +557,9 @@ async function extractGraphFromSummary(
                 },
             ],
             max_output_tokens: 2048,
+            reasoning: {
+                effort: 'medium',
+            },
 
             // `response_format` is supported by the API but missing from TS types.
             // So we cast the whole object to ResponseCreateParamsNonStreaming.
