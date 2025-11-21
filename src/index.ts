@@ -46,6 +46,18 @@ const buildConceptKey = (type?: string | null, text?: string | null): { key: str
     };
 };
 
+const sanitizePositiveInt = (
+    value: number | null | undefined,
+    fallback: number,
+    min: number = 1,
+): number => {
+    const num = Number(value);
+    if (!Number.isFinite(num)) return fallback;
+    const floored = Math.floor(num);
+    if (floored < min) return fallback;
+    return floored;
+};
+
 const SLEEP_BY_STEP = 1000;
 
 export interface ConversationSummary {
@@ -233,8 +245,8 @@ export async function graphRagQueryHandler(
 ): Promise<GraphRagQueryResult> {
     const session = neo4jDriver.session();
 
-    const maxHops = args.max_hops ?? 2;
-    const maxSeeds = args.max_seeds ?? 5;
+    const maxHops = sanitizePositiveInt(args.max_hops, 2);
+    const maxSeeds = sanitizePositiveInt(args.max_seeds, 5);
     const queryText = (args.query ?? '').trim();
 
     if (!queryText) {
