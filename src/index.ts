@@ -29,7 +29,7 @@ const SLEEP_BY_STEP = 1000;
 export interface ConversationSummary {
     topics: string[];
     japanese_summary: string;
-    english_summary?: string;
+    english_summary?: string | null;
     key_claims: {
         speaker: ModelSide;
         text: string;
@@ -45,7 +45,7 @@ export interface ConversationGraph {
         id: string;
         type: "concept" | "claim" | "question" | "example" | "counterexample";
         text: string;
-        speaker?: "openai" | "anthropic";
+        speaker?: "openai" | "anthropic" | null;
     }[];
     edges: {
         source: string; // node id
@@ -528,7 +528,7 @@ async function summarizeConversation(messages: Message[]): Promise<ConversationS
                             description: "対話全体の日本語での要約（1〜3段落程度）",
                         },
                         english_summary: {
-                            type: "string",
+                            type: ["string", "null"],
                             description: "必要であれば、英語での簡潔な要約",
                         },
                         key_claims: {
@@ -537,9 +537,10 @@ async function summarizeConversation(messages: Message[]): Promise<ConversationS
                                 type: "object",
                                 properties: {
                                     speaker: {
-                                        type: "string",
+                                        type: ["string", "null"],
                                         enum: ["openai", "anthropic"],
                                         description: "モデルのベンダー識別名",
+                                        nullable: true,
                                     },
                                     text: {
                                         type: "string",
@@ -562,7 +563,7 @@ async function summarizeConversation(messages: Message[]): Promise<ConversationS
                             items: { type: "string" },
                         },
                     },
-                    required: ["topics", "japanese_summary", "key_claims", "questions", "agreements", "disagreements"],
+                    required: ["topics", "japanese_summary", "english_summary", "key_claims", "questions", "agreements", "disagreements"],
                     additionalProperties: false,
                     strict: false,
                 },
@@ -1115,6 +1116,7 @@ const finish = async () => {
             openai_failures: openaiFailureCount,
             anthropic_failures: anthropicFailureCount,
             starting_side: startingSide,
+            base_prompt: BASE_PROMPT,
         })
     );
     fs.closeSync(logFp);
