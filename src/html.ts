@@ -4,6 +4,23 @@ import * as path from 'node:path';
 import { Marked } from "marked";
 import { markedHighlight } from "marked-highlight";
 import hljs from 'highlight.js';
+import { JSDOM, DOMWindow } from "jsdom";
+import createDOMPurify from "dompurify";
+
+const window = new JSDOM("").window as DOMWindow & {
+    trustedTypes: undefined,
+};
+
+function escapeHtml(str: string) {
+  return str
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
+const DOMPurify = createDOMPurify(window);
 
 const marked = new Marked(
     markedHighlight({
@@ -16,10 +33,19 @@ const marked = new Marked(
     }),
 );
 
+
+const safeMarkdown = (md: string) => {
+    const dirty = marked.parse(md, {
+        async: false,
+        gfm: true,
+    }) as string;
+    return DOMPurify.sanitize(dirty);
+};
+
 const buildHtml = (title: string, bodyHtml: string) => {
     let html = `<!DOCTYPE html><html lang='ja'><head>`
         + `<meta charset='utf-8'>`
-        + `<title>LLM哲学対話: ${title}</title>`
+        + `<title>LLM哲学対話: ${escapeHtml(title)}</title>`
         + `<link rel='stylesheet' href='style.css'>`
         + `</head><body>`;
     
@@ -35,7 +61,7 @@ const buildHtml = (title: string, bodyHtml: string) => {
 export const output_to_html = (jsonl_path: string) => {
     const basename = path.basename(jsonl_path);
     const name = basename.slice(0, -6);
-    let body = `<h1>対話ログ: ${name}</h1>`;
+    let body = `<h1>対話ログ: ${escapeHtml(name)}</h1>`;
     const lines = fs.readFileSync(jsonl_path, 'utf-8')
         .split('\n')
         .map(s => s.trim())
@@ -45,19 +71,19 @@ export const output_to_html = (jsonl_path: string) => {
     let side = 0;
     loop: for (const msg of lines) {
         body += `<div class='speaker'>`
-            + `<div class='name'>${msg.name}</div>`
-            + `<div class='date'>${msg.date}</div></div>`;
+            + `<div class='name'>${escapeHtml(msg.name)}</div>`
+            + `<div class='date'>${escapeHtml(msg.date)}</div></div>`;
         
         switch (msg.name) {
             case '司会': {
-                body += `<div class='chair message'>${marked.parse(msg.text)}</div>`;
+                body += `<div class='chair message'>${safeMarkdown(msg.text)}</div>`;
                 break;
             }
 
             case 'EOF': {
                 const data = JSON.parse(msg.text);
                 const md = '```json\n' + JSON.stringify(data, null, 4) + '\n```\n';
-                body += `<div class='eof message'>${marked.parse(md)}</div>`;
+                body += `<div class='eof message'>${safeMarkdown(md)}</div>`;
                 break loop;
             }
 
@@ -82,9 +108,9 @@ export const output_to_html = (jsonl_path: string) => {
                 try {
                     const data = JSON.parse(msg.text);
                     const md = '```json\n' + JSON.stringify(data, null, 4) + '\n```\n';
-                    body += `<div class='${cl}'>${marked.parse(md)}</div>`;
+                    body += `<div class='${cl}'>${safeMarkdown(md)}</div>`;
                 } catch (_e) {
-                    body += `<div class='${cl}'>${marked.parse(msg.text)}</div>`;
+                    body += `<div class='${cl}'>${safeMarkdown(msg.text)}</div>`;
                 }
                 break;
             }
@@ -109,7 +135,7 @@ export const output_to_html = (jsonl_path: string) => {
     list.sort();
     let listBody = `<h1>対話一覧</h1><ul>`;
     for (const fname of list) {
-        listBody += `<li><a href='${fname}'>${fname.slice(0, -5)}</a></li>`
+        listBody += `<li><a href='${escapeHtml(fname)}'>${escapeHtml(fname.slice(0, -5))}</a></li>`
     }
     listBody += '</ul>';
     const listHtml = buildHtml('対話一覧', listBody);
