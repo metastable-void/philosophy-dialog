@@ -410,6 +410,8 @@ const buildSystemInstruction = (name: string, additional?: string) => {
 
 なお、この会話の相手は別のAIです。人間ではありません。
 
+あなたがたの会話は最後に GraphRAG に保存され、次回の会話でツールで参照できるようになります。（最初は RAG は空っぽかもしれません。）
+
 話題の例：
 
 - 現代の科学やAIが発展している中での形而上学について
@@ -428,6 +430,10 @@ const buildSystemInstruction = (name: string, additional?: string) => {
 
 const BASE_PROMPT = buildSystemInstruction('<MODEL_NAME>');
 const DEFAULT_ADD_PROMPT = '1回の発言は4000字程度を上限としてください。短い発言もOKです。';
+const TERMINATE_ADD_PROMPT = '司会より：あなたが対話終了ツールを呼び出したため、'
+                    + 'あなたの次の発言は本対話における最後の発言となります。'
+                    + 'お疲れさまでした。';
+const TOKEN_LIMIT_ADD_PROMPT = '司会より：あなたがたのコンテキスト長が限界に近付いています。今までの議論を短くまとめ、お別れの挨拶をしてください。';
 
 const openaiClient = new OpenAI({});
 const anthropicClient = new Anthropic({});
@@ -748,9 +754,7 @@ const openaiTurn = async () => {
                 temperature: 1.0,
                 instructions: buildSystemInstruction(
                     OPENAI_NAME,
-                    '司会より：あなたが対話終了ツールを呼び出したため、'
-                        + 'あなたの次の発言は本対話における最後の発言となります。'
-                        + 'お疲れさまでした。',
+                    TERMINATE_ADD_PROMPT,
                 ),
                 input: msgs,
                 tool_choice: 'auto',
@@ -816,7 +820,7 @@ const anthropicTurn = async () => {
             system: buildSystemInstruction(
                 ANTHROPIC_NAME,
                 hushFinish
-                    ? '司会より：あなたがたのコンテキスト長が限界に近付いています。今までの議論を短くまとめ、お別れの挨拶をしてください。'
+                    ? TOKEN_LIMIT_ADD_PROMPT
                     : DEFAULT_ADD_PROMPT
             ),
             messages: msgs,
@@ -879,15 +883,22 @@ const anthropicTurn = async () => {
                 content: toolResultsBlocks,
             });
 
+            const extraInstruction =
+                tool.name === "terminate_dialog"
+                    ? TERMINATE_ADD_PROMPT
+                    : (
+                        hushFinish
+                        ? '司会より：あなたがたのコンテキスト長が限界に近付いています。今までの議論を短くまとめ、お別れの挨拶をしてください。'
+                        : DEFAULT_ADD_PROMPT
+                    );
+
             const followup = await anthropicClient.messages.create({
                 model: ANTHROPIC_MODEL,
                 max_tokens: 8192,
                 temperature: 1.0,
                 system: buildSystemInstruction(
                     ANTHROPIC_NAME,
-                    '司会より：あなたが対話終了ツールを呼び出したため、'
-                        + 'あなたの次の発言は本対話における最後の発言となります。'
-                        + 'お疲れさまでした。',
+                    extraInstruction,
                 ),
                 messages: msgs,
                 tool_choice: { type: 'auto' },
