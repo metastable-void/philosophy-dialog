@@ -23,6 +23,7 @@ const ANTHROPIC_NAME = 'Claude Haiku 4.5';
 
 const GPT_5_1_MAX = 400000;
 const CLAUDE_HAIKU_4_5_MAX = 200000;
+const STRUCTURED_OUTPUT_MAX_TOKENS = 16384;
 
 const SLEEP_BY_STEP = 1000;
 
@@ -506,11 +507,11 @@ async function summarizeConversation(messages: Message[]): Promise<ConversationS
             role: "user",
             content:
                 "以下は2つのAIモデルの哲学対話の完全な記録です。" +
-                "この対話の全体像を理解し、指定されたJSONスキーマに従って要約してください。\n\n" +
+                "この対話の全体像を理解し、指定されたJSONスキーマに従って長くなりすぎないように要約してください。\n\n" +
                 transcript,
             },
         ],
-        max_output_tokens: 2048,
+        max_output_tokens: STRUCTURED_OUTPUT_MAX_TOKENS,
         text: {
             format: {
                 type: "json_schema",
@@ -572,13 +573,22 @@ async function summarizeConversation(messages: Message[]): Promise<ConversationS
         },
     } as OpenAI.Responses.ResponseCreateParamsNonStreaming);
 
-    // Responses API with JSON schema: you get a *single* JSON object as output_text
+    if (response.incomplete_details) {
+        throw new Error(
+            `Summary generation incomplete: ${response.incomplete_details.reason ?? 'unknown reason'}`
+        );
+    }
+
     const jsonText = response.output_text;
     if (typeof jsonText !== "string") {
         throw new Error("Unexpected non-string JSON output from summary call");
     }
 
-    return JSON.parse(jsonText) as ConversationSummary;
+    try {
+        return JSON.parse(jsonText) as ConversationSummary;
+    } catch (err) {
+        throw new Error(`Failed to parse summary JSON: ${(err as Error).message}`);
+    }
 }
 
 async function extractGraphFromSummary(
@@ -599,7 +609,7 @@ async function extractGraphFromSummary(
                         JSON.stringify(summary, null, 2),
                 },
             ],
-            max_output_tokens: 2048,
+            max_output_tokens: STRUCTURED_OUTPUT_MAX_TOKENS,
             reasoning: {
                 effort: 'medium',
             },
@@ -677,12 +687,22 @@ async function extractGraphFromSummary(
     // ----------------------------------------------
     // Extract JSON output
     // ----------------------------------------------
+    if (response.incomplete_details) {
+        throw new Error(
+            `Graph extraction incomplete: ${response.incomplete_details.reason ?? 'unknown reason'}`
+        );
+    }
+
     const jsonText = response.output_text;
     if (typeof jsonText !== "string") {
         throw new Error("Expected JSON string in response.output_text for graph extraction");
     }
 
-    return JSON.parse(jsonText) as ConversationGraph;
+    try {
+        return JSON.parse(jsonText) as ConversationGraph;
+    } catch (err) {
+        throw new Error(`Failed to parse graph JSON: ${(err as Error).message}`);
+    }
 }
 
 
