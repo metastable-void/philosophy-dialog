@@ -748,13 +748,18 @@ const openaiTurn = async () => {
 
             msgs.push(... toolResult);
 
+            const extraInstruction =
+                tool.name === "terminate_dialog"
+                    ? TERMINATE_ADD_PROMPT
+                    : (hushFinish ? undefined : DEFAULT_ADD_PROMPT);
+            
             const followup = await openaiClient.responses.create({
                 model: OPENAI_MODEL,
                 max_output_tokens: 8192,
                 temperature: 1.0,
                 instructions: buildSystemInstruction(
                     OPENAI_NAME,
-                    TERMINATE_ADD_PROMPT,
+                    extraInstruction,
                 ),
                 input: msgs,
                 tool_choice: 'auto',
