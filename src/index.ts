@@ -402,6 +402,17 @@ const log = (name: string, msg: string) => {
     print(`@${date}\n[${name}]:\n${msg}\n\n`);
 };
 
+const logToolEvent = (
+    actor: string,
+    event: 'call' | 'result',
+    payload: Record<string, unknown>,
+) => {
+    log(
+        `${actor} (tool ${event})`,
+        JSON.stringify(payload),
+    );
+};
+
 const buildSystemInstruction = (name: string, additional?: string) => {
     let prompt = `
 あなたは日本語の1:1の哲学対話に招かれている参加者です。自己紹介のあと、話題を提起し、あなたの関心のある事項について、相手と合わせながら会話をしてください。
@@ -739,7 +750,17 @@ const openaiTurn = async () => {
         if (last.type == 'function_call') {
             const tool = findTool(last.name);
             const args = last.arguments || {};
+            logToolEvent(
+                OPENAI_NAME,
+                'call',
+                { tool: last.name, args },
+            );
             const result = await tool.handler(args);
+            logToolEvent(
+                OPENAI_NAME,
+                'result',
+                { tool: last.name, result },
+            );
             const toolResult: OpenAI.Responses.ResponseFunctionToolCallOutputItem[] = [
                 {
                     type: 'function_call_output',
@@ -879,7 +900,17 @@ const anthropicTurn = async () => {
             const toolResultsBlocks: Anthropic.Messages.ToolResultBlockParam[] = [];
             const use = output;
             const tool = findTool(use.name);
+            logToolEvent(
+                ANTHROPIC_NAME,
+                'call',
+                { tool: use.name, args: use.input },
+            );
             const result = await tool.handler(use.input);
+            logToolEvent(
+                ANTHROPIC_NAME,
+                'result',
+                { tool: use.name, result },
+            );
             toolResultsBlocks.push({
                 type: "tool_result",
                 tool_use_id: use.id,
