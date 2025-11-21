@@ -89,7 +89,7 @@ export const output_to_html = (jsonl_path: string) => {
 
             default: {
                 const isSpecial = msg.name.startsWith('POSTPROC_');
-                let cl = !isSpecial ? 'llm message' : 'postproc message';
+                let cl = (!isSpecial) ? 'llm message' : 'postproc message';
                 if (!isSpecial) {
                     cl += ` side-${side}`;
                 }
