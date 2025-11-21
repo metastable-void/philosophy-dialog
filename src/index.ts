@@ -338,10 +338,12 @@ const tools: ToolDefinition[] = [
                 max_hops: {
                     type: "number",
                     description: "サブグラフ拡張の最大ホップ数（省略時 2）",
+                    nullable: true,
                 },
                 max_seeds: {
                     type: "number",
                     description: "初期シードノード数の上限（省略時 5）",
+                    nullable: true,
                 },
             },
             required: ["query"],
