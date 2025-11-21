@@ -235,6 +235,13 @@ export async function graphRagQueryHandler(
 
     const maxHops = args.max_hops ?? 2;
     const maxSeeds = args.max_seeds ?? 5;
+    const queryText = (args.query ?? '').trim();
+
+    if (!queryText) {
+        return {
+            context: "GraphRAG: クエリ文字列が空です。検索したい単語やフレーズを指定してください。",
+        };
+    }
 
     try {
         // 1. Find seed nodes by simple text search
@@ -246,12 +253,12 @@ export async function graphRagQueryHandler(
             RETURN n
             LIMIT $maxSeeds
             `,
-            { q: args.query, maxSeeds }
+            { q: queryText, maxSeeds }
         );
 
         if (seedRes.records.length === 0) {
             return {
-                context: `知識グラフ内に、クエリ「${args.query}」に明確に関連するノードは見つかりませんでした。`,
+                context: `知識グラフ内に、クエリ「${queryText}」に明確に関連するノードは見つかりませんでした。`,
             };
         }
 
@@ -315,7 +322,7 @@ export async function graphRagQueryHandler(
         // 4. Build a human-readable context string
         const lines: string[] = [];
 
-        lines.push(`GraphRAG: クエリ「${args.query}」に関連するサブグラフ要約:`);
+        lines.push(`GraphRAG: クエリ「${queryText}」に関連するサブグラフ要約:`);
         lines.push("");
 
         // Nodes
