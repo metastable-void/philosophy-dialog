@@ -24,6 +24,27 @@ const ANTHROPIC_NAME = 'Claude Haiku 4.5';
 const GPT_5_1_MAX = 400000;
 const CLAUDE_HAIKU_4_5_MAX = 200000;
 const STRUCTURED_OUTPUT_MAX_TOKENS = 16384;
+const CONCEPT_LINK_REL = 'NORMALIZED_AS';
+
+const normalizeConceptText = (text?: string | null): string | null => {
+    if (!text) return null;
+    const normalized = text
+        .normalize('NFKC')
+        .toLowerCase()
+        .replace(/\s+/g, ' ')
+        .trim();
+    return normalized || null;
+};
+
+const buildConceptKey = (type?: string | null, text?: string | null): { key: string; normalizedText: string } | null => {
+    const normalizedText = normalizeConceptText(text);
+    if (!normalizedText) return null;
+    const normalizedType = (type ?? 'unknown').toLowerCase();
+    return {
+        key: `${normalizedType}:${normalizedText}`,
+        normalizedText,
+    };
+};
 
 const SLEEP_BY_STEP = 1000;
 
@@ -93,6 +114,7 @@ export async function writeGraphToNeo4j(
 
         // 2. Nodes
         for (const node of graph.nodes) {
+            const conceptKeyData = buildConceptKey(node.type, node.text);
             await session.run(
                 `
                 MERGE (n:Node {id: $id})
@@ -102,6 +124,15 @@ export async function writeGraphToNeo4j(
                 WITH n
                 MATCH (r:Run {id: $runId})
                 MERGE (n)-[:IN_RUN]->(r)
+                WITH n
+                FOREACH (_ IN CASE WHEN $conceptKey IS NULL THEN [] ELSE [1] END |
+                    MERGE (c:Concept {key: $conceptKey})
+                    ON CREATE SET c.type = $type,
+                                  c.normalized_text = $normalizedText,
+                                  c.created_at = datetime()
+                    SET c.latest_text = $text
+                    MERGE (n)-[:${CONCEPT_LINK_REL}]->(c)
+                )
                 `,
                 {
                     id: node.id,
@@ -109,6 +140,8 @@ export async function writeGraphToNeo4j(
                     type: node.type,
                     speaker: node.speaker ?? null,
                     runId,
+                    conceptKey: conceptKeyData?.key ?? null,
+                    normalizedText: conceptKeyData?.normalizedText ?? null,
                 }
             );
         }
