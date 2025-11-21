@@ -62,10 +62,20 @@ export const output_to_html = (jsonl_path: string) => {
             }
 
             default: {
-                let cl = 'llm message';
-                cl += ` side-${side}`;
-                if (msg.name.endsWith(' (thinking)')) {
+                const isSpecial = msg.name.startsWith('POSTPROC_');
+                let cl = isSpecial ? 'llm message' : 'postproc message';
+                if (!isSpecial) {
+                    cl += ` side-${side}`;
+                }
+
+                if (isSpecial) {
+                    cl += 'special';
+                } else if (msg.name.endsWith(' (thinking)')) {
                     cl += ' thinking';
+                } if (msg.name.endsWith(' (tool call)')) {
+                    cl += ' tool-call';
+                } if (msg.name.endsWith(' (tool result)')) {
+                    cl += ' tool-result';
                 } else {
                     side = side == 0 ? 1 : 0;
                 }
