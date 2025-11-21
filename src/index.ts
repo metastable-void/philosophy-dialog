@@ -177,8 +177,8 @@ type TerminateDialogResult = {
 // GraphRAG tool implementation
 type GraphRagQueryArgs = {
     query: string;
-    max_hops?: number;   // how far to expand from seed nodes
-    max_seeds?: number;  // how many seed nodes to start from
+    max_hops?: number | null;   // how far to expand from seed nodes
+    max_seeds?: number | null;  // how many seed nodes to start from
 };
 
 type GraphRagQueryResult = {
@@ -337,16 +337,16 @@ const tools: ToolDefinition[] = [
                 },
                 max_hops: {
                     type: ["number", "null"],
-                    description: "サブグラフ拡張の最大ホップ数（省略時 2）",
+                    description: "サブグラフ拡張の最大ホップ数（null可）（省略時 2）",
                     nullable: true,
                 },
                 max_seeds: {
                     type: ["number", "null"],
-                    description: "初期シードノード数の上限（省略時 5）",
+                    description: "初期シードノード数の上限（null可）（省略時 5）",
                     nullable: true,
                 },
             },
-            required: ["query"],
+            required: ["query", "max_hops", "max_seeds"],
         },
         handler: graphRagQueryHandler,
     },
