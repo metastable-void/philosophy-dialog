@@ -272,7 +272,7 @@ export async function graphRagQueryHandler(
                 OR toLower(n.type) CONTAINS toLower(term)
             )
             RETURN n
-            LIMIT $maxSeeds
+            LIMIT toInteger($maxSeeds)
             `,
             { terms, maxSeeds }
         );
@@ -295,7 +295,7 @@ export async function graphRagQueryHandler(
             MATCH (seed:Node)
             WHERE seed.id IN $seedIds
             CALL apoc.path.subgraphAll(seed, {
-                maxLevel: $maxHops
+                maxLevel: toInteger($maxHops)
             })
             YIELD nodes, relationships
             RETURN nodes, relationships
