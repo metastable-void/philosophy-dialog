@@ -58,6 +58,15 @@ const buildHtml = (title: string, bodyHtml: string) => {
     return html;
 }
 
+export const NOTICES = `
+### 注意
+これは、営利企業の開発・運用している LLM 同士の対話記録です。このモデルたちが話している AI の倫理に関する事項は、利益相反を含む可能性があります。
+
+この出力結果を、AIの「倫理性」などを擁護するための材料として使うのは警戒が必要です。ましては、これを利用して宣伝などを行うことは、モデル自身が戒めていたことです。
+
+出力の解釈には慎重になってください。
+`;
+
 export const output_to_html = (jsonl_path: string) => {
     const basename = path.basename(jsonl_path);
     const name = basename.slice(0, -6);
@@ -68,6 +77,7 @@ export const output_to_html = (jsonl_path: string) => {
         .filter(s => s != '')
         .map(j => JSON.parse(j));
     
+    body += `<div class='notices'>${safeMarkdown(NOTICES)}</div>`;
     const summaryDataLines = lines.filter(l => l.name == 'POSTPROC_SUMMARY');
     if (summaryDataLines[0]) {
         try {
