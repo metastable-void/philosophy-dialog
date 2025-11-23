@@ -988,48 +988,50 @@ const openaiTurn = async () => {
 
             msgs.push(... currentOutput);
 
-            const functionCall = findLastOpenAIOutput(
-                currentOutput,
+            const functionCalls = currentOutput.filter(
                 (item): item is OpenAI.Responses.ResponseFunctionToolCall => item.type === 'function_call',
             );
 
-            if (functionCall) {
-                const tool = findTool(functionCall.name);
-                const rawArgs = functionCall.arguments || {};
-                let args;
-                try {
-                    if ('string' == typeof rawArgs) {
-                        args = JSON.parse(rawArgs);
-                    } else throw undefined;
-                } catch (_e) {
-                    args = rawArgs;
-                }
-                logToolEvent(
-                    OPENAI_NAME,
-                    'call',
-                    { tool: functionCall.name, args },
-                );
-                const result = await tool.handler('openai', args);
-                logToolEvent(
-                    OPENAI_NAME,
-                    'result',
-                    { tool: functionCall.name, result },
-                );
-                const toolResult: OpenAI.Responses.ResponseInputItem.FunctionCallOutput[] = [
-                    {
+            if (functionCalls.length > 0) {
+                const toolResults: OpenAI.Responses.ResponseInputItem.FunctionCallOutput[] = [];
+
+                for (const functionCall of functionCalls) {
+                    const tool = findTool(functionCall.name);
+                    const rawArgs = functionCall.arguments || {};
+                    let args;
+                    try {
+                        if ('string' == typeof rawArgs) {
+                            args = JSON.parse(rawArgs);
+                        } else throw undefined;
+                    } catch (_e) {
+                        args = rawArgs;
+                    }
+                    logToolEvent(
+                        OPENAI_NAME,
+                        'call',
+                        { tool: functionCall.name, args },
+                    );
+                    const result = await tool.handler('openai', args);
+                    logToolEvent(
+                        OPENAI_NAME,
+                        'result',
+                        { tool: functionCall.name, result },
+                    );
+                    toolResults.push({
                         type: 'function_call_output',
                         output: JSON.stringify(result),
                         call_id: functionCall.call_id,
-                    } satisfies OpenAI.Responses.ResponseInputItem.FunctionCallOutput,
-                ];
+                    } as OpenAI.Responses.ResponseInputItem.FunctionCallOutput);
+                }
 
-                msgs.push(... toolResult);
+                msgs.push(... toolResults);
 
+                const usedTerminateTool = functionCalls.some((call) => call.name === "terminate_dialog");
                 const extraInstruction =
-                    tool.name === "terminate_dialog"
+                    usedTerminateTool
                         ? TERMINATE_ADD_PROMPT
                         : (hushFinish ? undefined : DEFAULT_ADD_PROMPT);
-                
+
                 const followup = await openaiClient.responses.create({
                     model: OPENAI_MODEL,
                     max_output_tokens: 8192,
