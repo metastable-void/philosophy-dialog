@@ -74,7 +74,8 @@ export const output_to_html = (jsonl_path: string) => {
             const summaryData = JSON.parse(summaryDataLines[0].text);
             body += `<div class='summary'>`
                 + `<h2>要点</h2>`
-                + `<div class='summary-text'>${safeMarkdown(summaryData?.japanese_summary ?? '')}</div>`;
+                + `<div class='summary-text'>${safeMarkdown(summaryData?.japanese_summary ?? '')}</div>`
+                + `</div>`;
         } catch (_e) {}
     }
 
