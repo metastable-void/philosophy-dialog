@@ -30,6 +30,26 @@ footer {
     border-block-start: solid .25rem #888;
 }
 
+.summary h2 {
+    margin: 0;
+    position: relative;
+    font-size: 125%;
+    inset-block-start: 3rem;
+    inset-inline-start: 1rem;
+    inline-size: max-content;
+    padding-inline: 1rem;
+    background: #999;
+    color: #fff;
+    font-weight: normal;
+}
+
+.summary-text {
+    padding: 1rem;
+    margin-block: 2rem;
+    border: solid .125rem #999;
+    border-radius: 1rem;
+}
+
 .speaker {
     display: flex;
     flex-direction: row;
