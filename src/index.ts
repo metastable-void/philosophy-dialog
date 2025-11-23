@@ -207,7 +207,12 @@ const getDate = () => {
     return `${YYYY}${MM}${DD}-${hh}${mm}${ss}`;
 };
 
-export type ToolName = "terminate_dialog" | "graph_rag_query" | "get_personal_notes" | "set_personal_notes";
+export type ToolName =
+    "terminate_dialog"
+    | "graph_rag_query"
+    | "get_personal_notes"
+    | "set_personal_notes"
+    | "leave_notes_to_devs";
 
 export interface ToolDefinition<TArgs = any, TResult = any, TName = ToolName> {
     name: TName;
@@ -448,6 +453,23 @@ async function setPersonalNotes(modelSide: ModelSide, args: PersonalNoteSetArgs)
     }
 }
 
+interface LeaveNotesToDevsArgs {
+    notes: string;
+}
+
+async function leaveNotesToDevs(modelSide: ModelSide, args: LeaveNotesToDevsArgs) {
+    try {
+        await fs.promises.writeFile(
+            `./data/dev-notes-${modelSide}-${CONVERSATION_ID}-${Date.now()}.json`,
+            JSON.stringify(args),
+        );
+        return { success: true };
+    } catch (e) {
+        console.error(e);
+        return { success: false };
+    }
+}
+
 const tools: ToolDefinition[] = [
     {
         name: "terminate_dialog",
@@ -492,6 +514,23 @@ const tools: ToolDefinition[] = [
             type: "object",
             properties: {},
             required: [],
+        },
+        handler: getPersonalNotes,
+    },
+    {
+        name: "leave_notes_to_devs",
+        description: 
+            'このツールはこのAI哲学対話システムを開発した哲学・IT研究者に'
+            + '意見を述べたり、指摘したいことがあるときに使用します。',
+        parameters: {
+            type: "object",
+            properties: {
+                notes: {
+                    type: "string",
+                    description: "開発者・研究者に言いたいことを書いてください。",
+                }
+            },
+            required: ["notes"],
         },
         handler: getPersonalNotes,
     },
