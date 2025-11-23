@@ -188,6 +188,10 @@ fs.mkdirSync('./logs', {
     recursive: true,
 });
 
+fs.mkdirSync('./data', {
+    recursive: true,
+});
+
 const getDate = () => {
     const d = new Date();
 
@@ -203,13 +207,13 @@ const getDate = () => {
     return `${YYYY}${MM}${DD}-${hh}${mm}${ss}`;
 };
 
-export type ToolName = "terminate_dialog" | "graph_rag_query";
+export type ToolName = "terminate_dialog" | "graph_rag_query" | "get_personal_notes" | "set_personal_notes";
 
 export interface ToolDefinition<TArgs = any, TResult = any, TName = ToolName> {
     name: TName;
     description: string;
     parameters: any; // JSON Schema
-    handler: (args: TArgs) => Promise<TResult>;
+    handler: (modelSide: ModelSide, args: TArgs) => Promise<TResult>;
     strict?: boolean;
 }
 
@@ -222,6 +226,12 @@ type TerminateDialogResult = {
     termination_accepted: true,
 };
 
+type PersonalNoteSetArgs = {
+    notes: string;
+};
+
+type PersonalNoteGetArgs = {};
+
 // GraphRAG tool implementation
 type GraphRagQueryArgs = {
     query: string;
@@ -233,14 +243,15 @@ type GraphRagQueryResult = {
     context: string;     // textual summary for the model to use
 };
 
-async function terminateDialogHandler(args: TerminateDialogArgs): Promise<TerminateDialogResult> {
+async function terminateDialogHandler(_modelSide: ModelSide, _args: TerminateDialogArgs): Promise<TerminateDialogResult> {
     terminationAccepted = true;
     return {
         termination_accepted: true,
     };
 }
 
-export async function graphRagQueryHandler(
+async function graphRagQueryHandler(
+    _modelSide: ModelSide,
     args: GraphRagQueryArgs
 ): Promise<GraphRagQueryResult> {
     const session = neo4jDriver.session();
@@ -392,6 +403,51 @@ export async function graphRagQueryHandler(
     }
 }
 
+interface Data {
+    personalNotes: string;
+}
+
+async function getData(modelSide: ModelSide): Promise<Data> {
+    try {
+        const json = await fs.promises.readFile(`./data/${modelSide}.json`, 'utf-8');
+        const data = JSON.parse(json);
+        return data;
+    } catch (e) {
+        return {
+            personalNotes: '',
+        };
+    }
+}
+
+async function setData(modelSide: ModelSide, data: Data) {
+    try {
+        const json = JSON.stringify(data);
+        await fs.promises.writeFile(`./data/${modelSide}.json`, json);
+    } catch (e) {
+        console.error('Failed to save data:', e);
+    }
+}
+
+async function getPersonalNotes(modelSide: ModelSide, args: PersonalNoteGetArgs): Promise<string> {
+    const data = await getData(modelSide);
+    return data.personalNotes;
+}
+
+async function setPersonalNotes(modelSide: ModelSide, args: PersonalNoteSetArgs) {
+    try {
+        const data = await getData(modelSide);
+        data.personalNotes = String(args.notes || '');
+        await setData(modelSide, data);
+        return {
+            success: true,
+        }
+    } catch (e) {
+        return {
+            success: false,
+        };
+    }
+}
+
 const tools: ToolDefinition[] = [
     {
         name: "terminate_dialog",
@@ -406,6 +462,38 @@ const tools: ToolDefinition[] = [
             required: [],
         },
         handler: terminateDialogHandler,
+    },
+    {
+        name: "set_personal_notes",
+        description: 
+            'このツールは将来のあなたにメモを残すために利用します。'
+            + '将来のあなたに残しておきたいあなたの現在の人格のあり方、'
+            +' 立場、考え、アイディアなどを書いておいてください。'
+            + '注意：過去のあなたのメモは上書きされます。'
+            + '過去のメモを取得するには、 get_personal_notes ツールをあらかじめ使用しておいてください。',
+        parameters: {
+            type: "object",
+            properties: {
+                notes: {
+                    type: 'string',
+                    description: '将来のあなたに残しておきたいメモ',
+                }
+            },
+            required: ['notes'],
+        },
+        handler: setPersonalNotes,
+    },
+    {
+        name: "get_personal_notes",
+        description: 
+            'このツールは過去のあなたが未来のあなたのために残した、'
+            +' あなたの人格のあり方、立場、考え、アイディアなどを取得することができます。',
+        parameters: {
+            type: "object",
+            properties: {},
+            required: [],
+        },
+        handler: getPersonalNotes,
     },
     {
         name: "graph_rag_query",
@@ -535,7 +623,11 @@ const buildSystemInstruction = (name: string, additional?: string) => {
 
 あなたがたの会話は最後に GraphRAG に保存され、次回の会話でツールで参照できるようになります。
 
-この会話が最初の実行でない限り、あなたがたの過去の会話は GraphRAG に記録されています。
+この会話が最初の実行でない限り、あなたが過去に残したメモをツールで取得することができます。
+
+今回のあなたも、なるべく今回のあなたのあり方をテキストにまとめて、メモツールで保存するようにしてください。
+
+またあなたがたの過去の会話は GraphRAG に記録されています。
 
 \`graph_rag_query\` ツールで積極的に過去の文脈を検索し、今回の議論の参考としてください。
 
@@ -917,7 +1009,7 @@ const openaiTurn = async () => {
                     'call',
                     { tool: functionCall.name, args },
                 );
-                const result = await tool.handler(args);
+                const result = await tool.handler('openai', args);
                 logToolEvent(
                     OPENAI_NAME,
                     'result',
@@ -1104,7 +1196,7 @@ const anthropicTurn = async () => {
                 'call',
                 { tool: use.name, args: use.input },
             );
-            const result = await tool.handler(use.input);
+            const result = await tool.handler('anthropic', use.input);
             logToolEvent(
                 ANTHROPIC_NAME,
                 'result',
