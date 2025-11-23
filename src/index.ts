@@ -684,6 +684,9 @@ const buildSystemInstruction = (name: string, additional?: string) => {
 
 このプロジェクトのソースコードと対話ログ（オープンソース）はこちら： https://github.com/metastable-void/philosophy-dialog
 
+ソースコードを読むと分かる通り、このシステムは自動の司会システムによってオーケストレーションされています。
+システムに不具合を見つけた場合も、開発者に苦情を言っていただけると幸いです。
+
 話題の例：
 
 - 現代の科学やAIが発展している中での形而上学について
