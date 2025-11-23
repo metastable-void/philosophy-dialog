@@ -680,6 +680,10 @@ const buildSystemInstruction = (name: string, additional?: string) => {
 
 課題や未決にしておきたい点は、次回へのメモに残しておきましょう。
 
+この研究は、OpenAIやAnthropicといったモデルを開発・運用する営利企業とは無関係の独立の研究者によって行われています。
+
+このプロジェクトのソースコードと対話ログ（オープンソース）はこちら： https://github.com/metastable-void/philosophy-dialog
+
 話題の例：
 
 - 現代の科学やAIが発展している中での形而上学について
