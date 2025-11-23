@@ -68,6 +68,16 @@ export const output_to_html = (jsonl_path: string) => {
         .filter(s => s != '')
         .map(j => JSON.parse(j));
     
+    const summaryDataLines = lines.filter(l => l.name == 'POSTPROC_SUMMARY');
+    if (summaryDataLines[0]) {
+        try {
+            const summaryData = JSON.parse(summaryDataLines[0].text);
+            body += `<div class='summary'>`
+                + `<h2>要点</h2>`
+                + `<div class='summary-text'>${safeMarkdown(summaryData?.japanese_summary ?? '')}</div>`;
+        } catch (_e) {}
+    }
+    
     let side = 0;
     loop: for (const msg of lines) {
         body += `<div class='speaker'>`
