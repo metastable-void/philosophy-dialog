@@ -77,7 +77,18 @@ export const output_to_html = (jsonl_path: string) => {
                 + `<div class='summary-text'>${safeMarkdown(summaryData?.japanese_summary ?? '')}</div>`;
         } catch (_e) {}
     }
-    
+
+    let codePointsCount = 0;
+    lines.forEach(msg => {
+        if (msg.name == '司会' || msg.name.startsWith('POSTPROC_')) return;
+        if (msg.name.endsWith(')')) return;
+        if (msg.name != 'EOF') {
+            codePointsCount += [... msg.text].length;
+        }
+    });
+
+    body += `<div class='stats'>文字数: ${codePointsCount}</div>`;
+
     let side = 0;
     loop: for (const msg of lines) {
         body += `<div class='speaker'>`
