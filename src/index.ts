@@ -532,7 +532,7 @@ const tools: ToolDefinition[] = [
             },
             required: ["notes"],
         },
-        handler: getPersonalNotes,
+        handler: leaveNotesToDevs,
     },
     {
         name: "graph_rag_query",
