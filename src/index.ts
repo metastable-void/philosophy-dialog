@@ -115,6 +115,20 @@ export async function writeGraphToNeo4j(
     graph: ConversationGraph
 ): Promise<void> {
     const session = neo4jDriver.session();
+    const idMap = new Map<string, string>();
+    const getOrCreateNamespacedId = (rawId: string): string => {
+        const key = rawId ?? '';
+        if (idMap.has(key)) {
+            return idMap.get(key)!;
+        }
+        const baseId =
+            key.trim().length > 0
+                ? key
+                : randomBytes(12).toString('base64url');
+        const namespacedId = `${runId}:${baseId}`;
+        idMap.set(key, namespacedId);
+        return namespacedId;
+    };
 
     try {
         // 1. Run node
@@ -129,12 +143,14 @@ export async function writeGraphToNeo4j(
         // 2. Nodes
         for (const node of graph.nodes) {
             const conceptKeyData = buildConceptKey(node.type, node.text);
+            const namespacedId = getOrCreateNamespacedId(node.id);
             await session.run(
                 `
                 MERGE (n:Node {id: $id})
                 SET n.text = $text,
                     n.type = $type,
-                    n.speaker = $speaker
+                    n.speaker = $speaker,
+                    n.original_id = $originalId
                 WITH n
                 MATCH (r:Run {id: $runId})
                 MERGE (n)-[:IN_RUN]->(r)
@@ -149,7 +165,8 @@ export async function writeGraphToNeo4j(
                 )
                 `,
                 {
-                    id: node.id,
+                    id: namespacedId,
+                    originalId: node.id,
                     text: node.text,
                     type: node.type,
                     speaker: node.speaker ?? null,
@@ -168,7 +185,8 @@ export async function writeGraphToNeo4j(
             if (!["SUPPORTS", "CONTRADICTS", "ELABORATES", "RESPONDS_TO", "REFERS_TO"].includes(relType)) {
                 continue;
             }
-
+            const sourceId = getOrCreateNamespacedId(edge.source);
+            const targetId = getOrCreateNamespacedId(edge.target);
             const cypher = `
                 MATCH (a:Node {id: $source})
                 MATCH (b:Node {id: $target})
@@ -177,8 +195,8 @@ export async function writeGraphToNeo4j(
             `;
 
             await session.run(cypher, {
-                source: edge.source,
-                target: edge.target,
+                source: sourceId,
+                target: targetId,
             });
         }
     } finally {
@@ -430,7 +448,9 @@ async function graphRagQueryHandler(
             }
 
             return {
-                context: graphText,
+                context: response.output_text.trim().length > 0
+                    ? response.output_text
+                    : graphText,
             };
         } catch (e) {
             console.error(e);
@@ -520,7 +540,7 @@ async function setAdditionalSystemInstructions(_modelSide: ModelSide, args: SetA
 }
 
 interface AskGeminiArgs {
-    speakerName: string;
+    speaker: string;
     text: string;
 }
 
@@ -529,7 +549,7 @@ async function askGeminiHandler(modelSide: string, args: AskGeminiArgs) {
         const response = await googleClient.models.generateContent({
             model: 'gemini-2.5-flash',
             contents: `2つのAIが哲学対話として設定されたなかで会話を行っています。`
-                + `以下は、この対話の中で、「${args.speakerName}」側からGoogle Geminiに第三者として意見や発言を求める文章です。`
+                + `以下は、この対話の中で、「${args.speaker}」側からGoogle Geminiに第三者として意見や発言を求める文章です。`
                 + `文脈を理解し、日本語で応答を行ってください：\n\n`
                 + args.text,
         });
@@ -770,6 +790,19 @@ function findTool(name: string) {
 
 const openaiTools = toOpenAITools(tools);
 const anthropicTools = toAnthropicTools(tools);
+const OPENAI_WEB_SEARCH_TOOL = { type: "web_search" } as const;
+const ANTHROPIC_WEB_SEARCH_TOOL = {
+    type: "web_search_20250305",
+    name: "web_search",
+} as const;
+const getOpenAIToolsWithSearch = () => ([
+    ...openaiTools,
+    OPENAI_WEB_SEARCH_TOOL,
+]);
+const getAnthropicToolsWithSearch = () => ([
+    ...anthropicTools,
+    ANTHROPIC_WEB_SEARCH_TOOL,
+]);
 
 const CONVERSATION_ID = getDate();
 const LOG_FILE_NAME = `./logs/${CONVERSATION_ID}.log.jsonl`;
@@ -1233,12 +1266,7 @@ const openaiTurn = async () => {
                 effort: 'medium',
             },
             tool_choice: 'auto',
-            tools: [
-                ... openaiTools,
-                {
-                    type: "web_search",
-                }
-            ],
+            tools: getOpenAIToolsWithSearch(),
         });
 
         if (response.usage?.total_tokens) {
@@ -1324,7 +1352,7 @@ const openaiTurn = async () => {
                         effort: 'medium',
                     },
                     tool_choice: 'auto',
-                    tools: openaiTools,
+                    tools: getOpenAIToolsWithSearch(),
                 });
 
                 if (followup.usage?.total_tokens) {
@@ -1401,13 +1429,7 @@ const anthropicTurn = async () => {
             ),
             messages: msgs,
             tool_choice: { type: 'auto' },
-            tools: [
-                ... anthropicTools,
-                {
-                    "type": "web_search_20250305",
-                    "name": "web_search"
-                },
-            ],
+            tools: getAnthropicToolsWithSearch(),
             thinking: {
                 type: 'enabled',
                 budget_tokens: 1024,
@@ -1513,7 +1535,7 @@ const anthropicTurn = async () => {
                 ),
                 messages: msgs,
                 tool_choice: { type: 'auto' },
-                tools: anthropicTools,
+                tools: getAnthropicToolsWithSearch(),
             });
 
             const followupText = (() => {

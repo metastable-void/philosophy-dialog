@@ -138,7 +138,7 @@ export const output_to_html = (jsonl_path: string) => {
                 }
 
                 if (isSpecial) {
-                    cl += 'special';
+                    cl += ' special';
                 } else if (msg.name.endsWith(' (thinking)')) {
                     cl += ' thinking';
                 } else if (msg.name.endsWith(' (tool call)')) {
