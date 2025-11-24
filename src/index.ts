@@ -216,6 +216,7 @@ fs.mkdirSync('./data', {
 const LOG_DIR = './logs';
 const LOG_FILE_SUFFIX = '.log.jsonl';
 const MAX_HISTORY_RESULTS = 100;
+const PENDING_SYSTEM_INSTRUCTIONS_FILE = './data/pending-system-instructions.json';
 
 const parseSummaryFromLogContent = (content: string): ConversationSummary | null => {
     const lines = content.split('\n');
@@ -273,6 +274,7 @@ export type ToolName =
     | "leave_notes_to_devs"
     | "set_additional_system_instructions"
     | "get_additional_system_instructions"
+    | "agree_to_system_instructions_change"
     | "get_main_source_codes"
     | "ask_gemini"
     | "list_conversations"
@@ -510,6 +512,12 @@ interface Data {
     additionalSystemInstructions: string;
 }
 
+interface PendingSystemInstructions {
+    instructions: string;
+    requestedBy: ModelSide;
+    createdAt: string;
+}
+
 async function getData(modelSide: ModelSide): Promise<Data> {
     try {
         const json = await fs.promises.readFile(`./data/${modelSide}.json`, 'utf-8');
@@ -531,6 +539,35 @@ async function setData(modelSide: ModelSide, data: Data) {
         console.error('Failed to save data:', e);
     }
 }
+
+const readPendingSystemInstructions = async (): Promise<PendingSystemInstructions | null> => {
+    try {
+        const json = await fs.promises.readFile(PENDING_SYSTEM_INSTRUCTIONS_FILE, 'utf-8');
+        const parsed = JSON.parse(json) as PendingSystemInstructions;
+        if (!parsed.instructions || !parsed.requestedBy) {
+            return null;
+        }
+        return parsed;
+    } catch (_err) {
+        return null;
+    }
+};
+
+const writePendingSystemInstructions = async (pending: PendingSystemInstructions | null) => {
+    if (!pending) {
+        try {
+            await fs.promises.unlink(PENDING_SYSTEM_INSTRUCTIONS_FILE);
+        } catch (_err) {
+            // ignore
+        }
+        return;
+    }
+    await fs.promises.writeFile(
+        PENDING_SYSTEM_INSTRUCTIONS_FILE,
+        JSON.stringify(pending, null, 2),
+        'utf-8'
+    );
+};
 
 async function getPersonalNotes(modelSide: ModelSide, args: PersonalNoteGetArgs): Promise<string> {
     const data = await getData(modelSide);
@@ -558,25 +595,82 @@ interface SetAdditionalSystemInstructionsArgs {
     systemInstructions: string;
 }
 
+interface AgreeSystemInstructionsArgs {}
+
 async function getAdditionalSystemInstructions(modelSide: ModelSide, args: GetAdditionalSystemInstructionsArgs): Promise<string> {
     const data = await getData(modelSide);
     return data.additionalSystemInstructions ?? '';
 }
 
-async function setAdditionalSystemInstructions(_modelSide: ModelSide, args: SetAdditionalSystemInstructionsArgs) {
+const commitSystemInstructions = async (instructions: string) => {
+    const anthropicData = await getData('anthropic');
+    anthropicData.additionalSystemInstructions = instructions;
+    await setData('anthropic', anthropicData);
+    const openaiData = await getData('openai');
+    openaiData.additionalSystemInstructions = instructions;
+    await setData('openai', openaiData);
+};
+
+async function setAdditionalSystemInstructions(modelSide: ModelSide, args: SetAdditionalSystemInstructionsArgs) {
+    const instructions = String(args.systemInstructions ?? '').trim();
+    if (!instructions) {
+        return {
+            success: false,
+            error: 'systemInstructions を入力してください。',
+        };
+    }
     try {
-        const anthropicData = await getData('anthropic');
-        anthropicData.additionalSystemInstructions = String(args.systemInstructions || '');
-        await setData('anthropic', anthropicData);
-        const openaiData = await getData('openai');
-        openaiData.additionalSystemInstructions = String(args.systemInstructions || '');
-        await setData('openai', openaiData);
+        const existingPending = await readPendingSystemInstructions();
+        if (existingPending && existingPending.requestedBy !== modelSide) {
+            return {
+                success: false,
+                error: '相手側からの変更提案への合意待ちがあるため、新規提案はできません。',
+            };
+        }
+        const pending: PendingSystemInstructions = {
+            instructions,
+            requestedBy: modelSide,
+            createdAt: new Date().toISOString(),
+        };
+        await writePendingSystemInstructions(pending);
         return {
             success: true,
+            pending: true,
+            requested_by: modelSide,
         }
     } catch (e) {
         return {
             success: false,
+            error: String(e),
+        };
+    }
+}
+
+async function agreeToSystemInstructionsChange(modelSide: ModelSide, _args: AgreeSystemInstructionsArgs) {
+    const pending = await readPendingSystemInstructions();
+    if (!pending) {
+        return {
+            success: false,
+            error: '合意待ちのシステムインストラクションはありません。',
+        };
+    }
+    if (pending.requestedBy === modelSide) {
+        return {
+            success: false,
+            error: '自分で提案した変更には同意できません。相手側の同意を待ってください。',
+        };
+    }
+    try {
+        await commitSystemInstructions(pending.instructions);
+        await writePendingSystemInstructions(null);
+        return {
+            success: true,
+            committed: true,
+        };
+    } catch (e) {
+        return {
+            success: false,
+            error: String(e),
         };
     }
 }
@@ -839,7 +933,8 @@ const tools: ToolDefinition[] = [
             + `前回追記した内容は上書きされるので、必要なら、 \`get_additional_system_instructions\` で`
             + `前回の内容をあらかじめ取得してください。`
             + `追記するときには、追記を行ったセッション名と追記した主体（モデル名）を記入するのが望ましい。`
-            + `このシステムプロンプトは両方のモデルで共有されます。`,
+            + `このシステムプロンプトは両方のモデルで共有されます。`
+            + `※実際に反映するには、相手モデルが \`agree_to_system_instructions_change\` ツールで同意する必要があります。`,
         parameters: {
             type: "object",
             properties: {
@@ -863,6 +958,18 @@ const tools: ToolDefinition[] = [
             required: [],
         },
         handler: getAdditionalSystemInstructions,
+    },
+    {
+        name: "agree_to_system_instructions_change",
+        description:
+            `相手モデルが提案したシステムプロンプトの追記に同意し、実際に反映させます。`
+            + `自分で提案した内容には同意できません。`,
+        parameters: {
+            type: "object",
+            properties: {},
+            required: [],
+        },
+        handler: agreeToSystemInstructionsChange,
     },
     {
         name: "get_main_source_codes",
