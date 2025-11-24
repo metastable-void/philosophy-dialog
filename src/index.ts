@@ -269,6 +269,7 @@ const getDate = () => {
 export type ToolName =
     "terminate_dialog"
     | "graph_rag_query"
+    | "graph_rag_focus_node"
     | "get_personal_notes"
     | "set_personal_notes"
     | "leave_notes_to_devs"
@@ -315,6 +316,15 @@ type GraphRagQueryArgs = {
 
 type GraphRagQueryResult = {
     context: string;     // textual summary for the model to use
+};
+
+type GraphRagFocusNodeArgs = {
+    node_id: string;
+    max_hops?: number | null;
+};
+
+type GraphRagFocusNodeResult = {
+    context: string;
 };
 
 async function terminateDialogHandler(_modelSide: ModelSide, _args: TerminateDialogArgs): Promise<TerminateDialogResult> {
@@ -503,6 +513,137 @@ async function graphRagQueryHandler(
                 context: graphText,
             };
         }
+    } finally {
+        await session.close();
+    }
+}
+
+async function graphRagFocusNodeHandler(
+    _modelSide: ModelSide,
+    args: GraphRagFocusNodeArgs
+): Promise<GraphRagFocusNodeResult> {
+    const session = neo4jDriver.session();
+    const nodeId = (args.node_id ?? '').trim();
+    if (!nodeId) {
+        return { context: 'GraphRAG Focus: node_id が指定されていません。' };
+    }
+    const maxHops = sanitizePositiveInt(args.max_hops, 2);
+    const maxHopsInt = neo4j.int(maxHops);
+
+    try {
+        const seedRes = await session.run(
+            `
+            MATCH (seed:Node {id: $nodeId})
+            RETURN seed
+            `,
+            { nodeId }
+        );
+        if (seedRes.records.length === 0) {
+            return { context: `GraphRAG Focus: ノード ${nodeId} は見つかりませんでした。` };
+        }
+
+        const expandRes = await session.run(
+            `
+            MATCH (seed:Node {id: $nodeId})
+            CALL apoc.path.subgraphAll(seed, {
+                maxLevel: toInteger($maxHops)
+            })
+            YIELD nodes, relationships
+            RETURN nodes, relationships
+            `,
+            { nodeId, maxHops: maxHopsInt }
+        );
+
+        if (expandRes.records.length === 0) {
+            return { context: `GraphRAG Focus: ${nodeId} の近傍を取得できませんでした。` };
+        }
+
+        const nodeMap = new Map<string, any>();
+        const rels: any[] = [];
+        const elementIdToNodeId = new Map<string, string>();
+
+        for (const record of expandRes.records) {
+            const nodes = record.get("nodes") as any[];
+            const relationships = record.get("relationships") as any[];
+
+            for (const n of nodes) {
+                const id = n.properties.id as string;
+                if (!id) continue;
+                if (!nodeMap.has(id)) {
+                    nodeMap.set(id, n);
+                    const elementId = typeof n.elementId === 'function'
+                        ? n.elementId()
+                        : n.elementId;
+                    if (elementId) {
+                        elementIdToNodeId.set(String(elementId), id);
+                    }
+                }
+            }
+
+            for (const r of relationships) {
+                rels.push(r);
+            }
+        }
+
+        const lines: string[] = [];
+        lines.push(`GraphRAG Focus: ノード ${nodeId} を中心とした半径 ${maxHops} ホップのサブグラフ:`);
+        lines.push('');
+        lines.push('【ノード】');
+        for (const [id, n] of nodeMap.entries()) {
+            const type = (n.properties.type as string) || "unknown";
+            const speaker = (n.properties.speaker as string) || "-";
+            const text = (n.properties.text as string) || "";
+            lines.push(`- [${id}] type=${type}, speaker=${speaker}: ${text}`);
+        }
+        lines.push('');
+        lines.push('【関係】');
+        for (const r of rels) {
+            const startElementIdRaw =
+                (typeof r.startNodeElementId === 'function'
+                    ? r.startNodeElementId()
+                    : r.startNodeElementId)
+                ?? r.start
+                ?? "";
+            const endElementIdRaw =
+                (typeof r.endNodeElementId === 'function'
+                    ? r.endNodeElementId()
+                    : r.endNodeElementId)
+                ?? r.end
+                ?? "";
+            const startElementId = String(startElementIdRaw);
+            const endElementId = String(endElementIdRaw);
+            const startId = elementIdToNodeId.get(startElementId) ?? startElementId;
+            const endId = elementIdToNodeId.get(endElementId) ?? endElementId;
+            const relType = r.type || r.elementId || "REL";
+            lines.push(`- (${startId}) -[:${relType}]-> (${endId})`);
+        }
+
+        const graphText = lines.join('\n');
+
+        try {
+            const response = await openaiClient.responses.create({
+                model: OPENAI_MODEL,
+                input: [
+                    {
+                        role: "system",
+                        content: `以下は GraphRAG に保存されたノード ${nodeId} の近傍情報です。焦点ノードを中心とした議論を短く整理してください。`,
+                    },
+                    {
+                        role: "user",
+                        content: graphText,
+                    },
+                ],
+                max_output_tokens: STRUCTURED_OUTPUT_MAX_TOKENS,
+            });
+
+            if (response.output_text && response.output_text.trim().length > 0) {
+                return { context: response.output_text };
+            }
+        } catch (err) {
+            console.error(err);
+        }
+
+        return { context: graphText };
     } finally {
         await session.close();
     }
@@ -1185,6 +1326,28 @@ const tools: ToolDefinition[] = [
             required: ["query"],
         },
         handler: graphRagQueryHandler,
+    },
+    {
+        name: "graph_rag_focus_node",
+        strict: false,
+        description:
+            "GraphRAG に保存されたグラフから特定のノードを中心に、その近傍の議論を取得します。",
+        parameters: {
+            type: "object",
+            properties: {
+                node_id: {
+                    type: "string",
+                    description: "焦点を当てたいノードID",
+                },
+                max_hops: {
+                    type: ["number", "null"],
+                    nullable: true,
+                    description: "近傍探索の最大 hop 数（省略時 2）",
+                },
+            },
+            required: ["node_id", "max_hops"],
+        },
+        handler: graphRagFocusNodeHandler,
     },
     {
         name: "compare_conversation_themes",
