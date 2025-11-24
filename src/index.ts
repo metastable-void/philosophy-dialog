@@ -214,7 +214,8 @@ export type ToolName =
     | "set_personal_notes"
     | "leave_notes_to_devs"
     | "set_additional_system_instructions"
-    | "get_additional_system_instructions";
+    | "get_additional_system_instructions"
+    | "get_main_source_codes";
 
 export interface ToolDefinition<TArgs = any, TResult = any, TName = ToolName> {
     name: TName;
@@ -515,6 +516,19 @@ async function setAdditionalSystemInstructions(_modelSide: ModelSide, args: SetA
     }
 }
 
+
+interface GetMainSourceCodesArgs {}
+
+async function getMainSourceCodeHandler(modelSide: ModelSide, args: GetMainSourceCodesArgs) {
+    try {
+        const codes = await fs.promises.readFile('./dist/index.ts', 'utf-8');
+        return { success: true, mainSourceCode: codes };
+    } catch (e) {
+        console.error(e);
+        return { success: false, mainSourceCode: '' };
+    }
+}
+
 interface LeaveNotesToDevsArgs {
     notes: string;
 }
@@ -610,6 +624,16 @@ const tools: ToolDefinition[] = [
             required: [],
         },
         handler: getAdditionalSystemInstructions,
+    },
+    {
+        name: "get_main_source_codes",
+        description: 'このシステムの主たるTypeScriptソースコードを取得することができるツールです。',
+        parameters: {
+            type: 'object',
+            properties: {},
+            required: [],
+        },
+        handler: getMainSourceCodeHandler,
     },
     {
         name: "leave_notes_to_devs",
