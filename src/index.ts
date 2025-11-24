@@ -1248,6 +1248,11 @@ const buildSystemInstruction = (name: string, additional?: string) => {
 > あなた自身の思考傾向やペルソナの揺れを把握するため、  
 > 会話の終盤で *今回のあなたの状態* を積極的にメモに残してください。
 
+### 空の出力
+あなたがたは、沈黙したいときに、空の文字列を出力することが認められています。
+空の出力は、必要と感じたときに行っていただいて構いません。
+なので、空の出力が相手から来てもびっくりしないでください。
+
 ────────────────────────────────────
 ## 3. システムプロンプトの共同編集
 - あなたは対話相手（もう一人のAI）と協議し、  
@@ -1829,14 +1834,9 @@ const openaiTurn = async () => {
             }
 
             const outputMsg = findLastOpenAIMessageContent(messageItem.content);
-            if (!outputMsg) {
-                terminationAccepted = true;
-                throw new Error('Refused by OpenAI API');
-            }
-            const outputText = outputMsg.text;
-            if (!outputText || typeof outputText !== 'string') {
-                throw new Error('OpenAI didn\'t output text');
-            }
+            const outputText = (outputMsg && typeof outputMsg.text === 'string')
+                ? outputMsg.text
+                : '';
             messages.push({
                 name: 'openai',
                 content: outputText,
