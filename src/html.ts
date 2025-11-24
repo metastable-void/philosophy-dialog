@@ -82,6 +82,9 @@ export const output_to_html = (jsonl_path: string) => {
     if (summaryDataLines[0]) {
         try {
             const summaryData = JSON.parse(summaryDataLines[0].text);
+            if (summaryData?.title) {
+                body += `<p><i>${escapeHtml(summaryData?.title)}</i></p>`;
+            }
             body += `<div class='summary'>`
                 + `<h2>要点</h2>`
                 + `<div class='summary-text'>${safeMarkdown(summaryData?.japanese_summary ?? '')}</div>`
