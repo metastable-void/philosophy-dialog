@@ -1146,9 +1146,12 @@ const buildSystemInstruction = (name: string, additional?: string) => {
 - あなたは対話相手（もう一人のAI）と協議し、  
   **次回のシステムプロンプトに追加したい事項**を  
   \`set_additional_system_instructions\` を用いて指定できます。
-- システムプロンプトは **両モデルで共有**されるため、  
+- システムプロンプトは **両モデルで強制的に共有**されるため、  
   **相手モデルと合意形成を行いながら**調整案を出してください。
 - この書き込みを行うと、次回の対話において前のシステムプロンプトは上書きされます。
+- \`set_additional_system_instructions\` 呼び出しは、その**後に**もう一方のモデルが
+  \`agree_to_system_instructions_change\` ツール呼び出しで同意しないと反映されません。
+  あなたがもう一方のモデルのシステムプロンプト変更に同意する場合は、必ず \`agree_to_system_instructions_change\` ツールを呼び出してください。
 
 ────────────────────────────────────
 ## 4. メタ的思考・ソースコード参照
