@@ -1936,12 +1936,9 @@ const anthropicTurn = async () => {
                 const latestText = [...assistantBlocks].reverse().find(
                     (block): block is Anthropic.Messages.TextBlock => block.type === 'text'
                 );
-                if (!latestText) {
-                    throw new Error('Non-text output from Anthropic');
-                }
                 messages.push({
                     name: 'anthropic',
-                    content: latestText.text,
+                    content: latestText?.text ?? '',
                 });
                 break;
             }
