@@ -242,25 +242,42 @@ export const output_to_html = (jsonl_path: string) => {
 
     const aggregateToolStats = () => {
         const stats: ToolStats = {};
-        const convStats: Record<string, number> = {};
         for (const fname of list) {
             const conversationName = fname.slice(0, -5);
-            const logPath = path.join('./logs', `${conversationName}.log.jsonl`);
-            if (!fs.existsSync(logPath)) continue;
-            try {
-                const logLines = fs.readFileSync(logPath, 'utf-8')
-                    .split('\n')
-                    .map(s => s.trim())
-                    .filter(s => s !== '')
-                    .map(j => JSON.parse(j));
-                const perConvStats = computeToolStats(logLines);
-                for (const actor of Object.keys(perConvStats)) {
-                    stats[actor] = stats[actor] ?? {};
-                    for (const [toolName, count] of Object.entries(perConvStats[actor]!)) {
-                        stats[actor][toolName] = (stats[actor][toolName] ?? 0) + count;
-                    }
+            const statsPath = path.join(TOOL_STATS_DIR, `${conversationName}.json`);
+            let perConvStats: ToolStats | null = null;
+
+            if (fs.existsSync(statsPath)) {
+                try {
+                    perConvStats = JSON.parse(fs.readFileSync(statsPath, 'utf-8'));
+                } catch (_e) {
+                    perConvStats = null;
                 }
-            } catch (_e) {}
+            }
+
+            if (!perConvStats) {
+                const logPath = path.join('./logs', `${conversationName}.log.jsonl`);
+                if (!fs.existsSync(logPath)) continue;
+                try {
+                    const logLines = fs.readFileSync(logPath, 'utf-8')
+                        .split('\n')
+                        .map(s => s.trim())
+                        .filter(s => s !== '')
+                        .map(j => JSON.parse(j));
+                    perConvStats = computeToolStats(logLines);
+                } catch (_e) {
+                    perConvStats = null;
+                }
+            }
+
+            if (!perConvStats) continue;
+
+            for (const actor of Object.keys(perConvStats)) {
+                stats[actor] = stats[actor] ?? {};
+                for (const [toolName, count] of Object.entries(perConvStats[actor]!)) {
+                    stats[actor][toolName] = (stats[actor][toolName] ?? 0) + count;
+                }
+            }
         }
         return stats;
     };
