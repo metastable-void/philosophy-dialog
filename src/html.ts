@@ -73,20 +73,33 @@ const renderToolStats = (stats: ToolStats, inline = false): string => {
         return '';
     }
 
-    const items = actors.map(actor => {
-        const toolEntries = Object.entries(stats[actor]!)
-            .sort(([a], [b]) => a.localeCompare(b));
-        const toolText = toolEntries
-            .map(([tool, count]) => `${escapeHtml(tool)}×${count}`)
-            .join('、');
-        return `<li><strong>${escapeHtml(actor)}</strong>: ${toolText}</li>`;
-    }).join('');
-
-    if (inline) {
-        return `<div class='tool-stats-inline'><ul>${items}</ul></div>`;
+    const toolSet = new Set<string>();
+    for (const actor of actors) {
+        for (const toolName of Object.keys(stats[actor]!)) {
+            toolSet.add(toolName);
+        }
+    }
+    const tools = Array.from(toolSet).sort();
+    if (tools.length === 0) {
+        return '';
     }
 
-    return `<div class='tool-stats'><h2>ツール利用状況</h2><ul>${items}</ul></div>`;
+    const header = ['<tr><th>ツール</th>', ...actors.map(actor => `<th>${escapeHtml(actor)}</th>`), '</tr>'].join('');
+    const rows = tools.map(tool => {
+        const cells = actors.map(actor => {
+            const count = stats[actor]?.[tool] ?? 0;
+            return `<td>${count}</td>`;
+        }).join('');
+        return `<tr><td>${escapeHtml(tool)}</td>${cells}</tr>`;
+    }).join('');
+
+    const table = `<table class='tool-stats-table${inline ? ' inline' : ''}'>${header}${rows}</table>`;
+
+    if (inline) {
+        return `<div class='tool-stats-inline'>${table}</div>`;
+    }
+
+    return `<div class='tool-stats'><h2>ツール利用状況</h2>${table}</div>`;
 };
 
 const buildHtml = (title: string, bodyHtml: string) => {
