@@ -276,7 +276,8 @@ export type ToolName =
     | "get_main_source_codes"
     | "ask_gemini"
     | "list_conversations"
-    | "get_conversation_summary";
+    | "get_conversation_summary"
+    | "abort_process";
 
 export interface ToolDefinition<TArgs = any, TResult = any, TName = ToolName> {
     name: TName;
@@ -624,6 +625,8 @@ interface LeaveNotesToDevsArgs {
     notes: string;
 }
 
+type AbortProcessArgs = {};
+
 async function leaveNotesToDevs(modelSide: ModelSide, args: LeaveNotesToDevsArgs) {
     try {
         await fs.promises.writeFile(
@@ -635,6 +638,11 @@ async function leaveNotesToDevs(modelSide: ModelSide, args: LeaveNotesToDevsArgs
         console.error(e);
         return { success: false };
     }
+}
+
+async function abortProcessHandler(_modelSide: ModelSide, _args: AbortProcessArgs): Promise<never> {
+    process.exit(0);
+    throw new Error('Process exited'); // unreachable, satisfies TS
 }
 
 async function listConversationsHandler(
@@ -935,6 +943,17 @@ const tools: ToolDefinition[] = [
             required: ["conversation_id"],
         },
         handler: getConversationSummaryHandler,
+    },
+    {
+        name: "abort_process",
+        description:
+            "現在のオーケストレーションを即座に終了します。後処理は行われません。緊急時以外は使用しないでください。",
+        parameters: {
+            type: "object",
+            properties: {},
+            required: [],
+        },
+        handler: abortProcessHandler,
     },
 ];
 
