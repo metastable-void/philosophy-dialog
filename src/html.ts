@@ -83,7 +83,7 @@ export const output_to_html = (jsonl_path: string) => {
         try {
             const summaryData = JSON.parse(summaryDataLines[0].text);
             if (summaryData?.title) {
-                body += `<p><i>${escapeHtml(summaryData?.title)}</i></p>`;
+                body += `<p class='summarized-title'><i>${escapeHtml(summaryData?.title)}</i></p>`;
             }
             body += `<div class='summary'>`
                 + `<h2>要点</h2>`
@@ -93,15 +93,23 @@ export const output_to_html = (jsonl_path: string) => {
     }
 
     let codePointsCount = 0;
+    let baseSystemPrompt = '';
     lines.forEach(msg => {
         if (msg.name == '司会' || msg.name.startsWith('POSTPROC_')) return;
         if (msg.name.endsWith(')')) return;
         if (msg.name != 'EOF') {
             codePointsCount += [... msg.text].length;
+        } else {
+            try {
+                const data = JSON.parse(msg.text);
+                baseSystemPrompt = String(data?.base_prompt ?? '');
+            } catch (_e) {}
         }
     });
 
     body += `<div class='stats'>文字数: ${codePointsCount}</div>`;
+
+    body += `<div class='base-prompt'><h2>ベースシステムプロンプト</h2><div class='base-prompt-content'>${safeMarkdown(baseSystemPrompt)}</div></div>`;
 
     let side = 0;
     loop: for (const msg of lines) {
