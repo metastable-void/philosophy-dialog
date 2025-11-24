@@ -292,7 +292,7 @@ async function graphRagQueryHandler(
             RETURN n
             LIMIT toInteger($maxSeeds)
             `,
-            { terms, maxSeeds }
+            { terms, maxSeeds: maxSeedsInt }
         );
 
         if (seedRes.records.length === 0) {
@@ -402,9 +402,37 @@ async function graphRagQueryHandler(
             );
         }
 
-        return {
-            context: lines.join("\n"),
-        };
+        const graphText = lines.join('\n');
+
+        try {
+            const response = await openaiClient.responses.create({
+                model: OPENAI_MODEL, // e.g. "gpt-5.1"
+                input: [
+                    {
+                        role: "system",
+                        content: `以下は2つのAIモデルの哲学対話の過去の履歴からクエリ「${queryText}」で取得されたGraphRAGデータです。`
+                            + `日本語で長くなりすぎないように項目立てて要約してください。`
+                    },
+                    {
+                        role: 'user',
+                        content: graphText,
+                    }
+                ],
+                max_output_tokens: STRUCTURED_OUTPUT_MAX_TOKENS,
+            });
+
+            if (!response.output_text) {
+                throw undefined;
+            }
+
+            return {
+                context: graphText,
+            }
+        } catch (_e) {
+            return {
+                context: graphText,
+            };
+        }
     } finally {
         await session.close();
     }
