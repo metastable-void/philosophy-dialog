@@ -1,0 +1,13 @@
+{
+  "GPT 5.1": {
+    "get_personal_notes": 3,
+    "get_main_source_codes": 3,
+    "set_personal_notes": 3,
+    "leave_notes_to_devs": 1,
+    "terminate_dialog": 1
+  },
+  "Claude Haiku 4.5": {
+    "get_additional_system_instructions": 1,
+    "get_main_source_codes": 1
+  }
+}
