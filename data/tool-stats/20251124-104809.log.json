@@ -1,0 +1,18 @@
+{
+  "GPT 5.1": {
+    "get_personal_notes": 1,
+    "list_conversations": 2,
+    "graph_rag_query": 4,
+    "get_conversation_summary": 1,
+    "get_main_source_codes": 1,
+    "set_personal_notes": 1,
+    "sleep": 1
+  },
+  "Claude Haiku 4.5": {
+    "get_conversation_summary": 1,
+    "graph_rag_query": 1,
+    "get_personal_notes": 3,
+    "set_personal_notes": 1,
+    "terminate_dialog": 1
+  }
+}
