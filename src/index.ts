@@ -560,7 +560,12 @@ const tools: ToolDefinition[] = [
             + `このシステムプロンプトは両方のモデルで共有されます。`,
         parameters: {
             type: "object",
-            properties: {},
+            properties: {
+                systemInstructions: {
+                    type: 'string',
+                    description: 'システムプロンプトに追記したい内容',
+                }
+            },
             required: ['systemInstructions'],
         },
         handler: setAdditionalSystemInstructions,
