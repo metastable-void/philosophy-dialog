@@ -277,7 +277,8 @@ export type ToolName =
     | "ask_gemini"
     | "list_conversations"
     | "get_conversation_summary"
-    | "abort_process";
+    | "abort_process"
+    | "sleep";
 
 export interface ToolDefinition<TArgs = any, TResult = any, TName = ToolName> {
     name: TName;
@@ -627,6 +628,14 @@ interface LeaveNotesToDevsArgs {
 
 type AbortProcessArgs = {};
 
+interface SleepToolArgs {
+    seconds: number;
+}
+
+interface SleepToolResult {
+    message: string;
+}
+
 async function leaveNotesToDevs(modelSide: ModelSide, args: LeaveNotesToDevsArgs) {
     try {
         await fs.promises.writeFile(
@@ -643,6 +652,24 @@ async function leaveNotesToDevs(modelSide: ModelSide, args: LeaveNotesToDevsArgs
 async function abortProcessHandler(_modelSide: ModelSide, _args: AbortProcessArgs): Promise<never> {
     process.exit(0);
     throw new Error('Process exited'); // unreachable, satisfies TS
+}
+
+async function sleepToolHandler(
+    _modelSide: ModelSide,
+    args: SleepToolArgs
+): Promise<SleepToolResult> {
+    const seconds = Number(args?.seconds ?? 0);
+    if (!Number.isFinite(seconds) || seconds <= 0 || seconds >= 1800) {
+        return {
+            message: 'エラー: 待機秒数は1秒以上1800秒未満で指定してください。',
+        };
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, seconds * 1000));
+    const mm = Math.floor(seconds / 60).toString().padStart(2, '0');
+    const ss = Math.floor(seconds % 60).toString().padStart(2, '0');
+    return {
+        message: `このツールを呼び出してから${mm}分${ss}秒経過しました。`,
+    };
 }
 
 async function listConversationsHandler(
@@ -954,6 +981,24 @@ const tools: ToolDefinition[] = [
             required: [],
         },
         handler: abortProcessHandler,
+    },
+    {
+        name: "sleep",
+        description:
+            "指定した秒数だけ待機します（1秒以上1800秒未満）。会話のテンポを調整したいときに使用してください。",
+        parameters: {
+            type: "object",
+            properties: {
+                seconds: {
+                    type: "number",
+                    description: "待機したい秒数（1〜1799）",
+                    minimum: 1,
+                    maximum: 1799,
+                },
+            },
+            required: ["seconds"],
+        },
+        handler: sleepToolHandler,
     },
 ];
 
