@@ -10,6 +10,8 @@ import openaiTokenCounter from "openai-gpt-token-counter";
 import Anthropic from "@anthropic-ai/sdk";
 import neo4j from "neo4j-driver";
 
+import { GoogleGenAI } from "@google/genai";
+
 import { output_to_html } from './html.js';
 
 
@@ -215,7 +217,8 @@ export type ToolName =
     | "leave_notes_to_devs"
     | "set_additional_system_instructions"
     | "get_additional_system_instructions"
-    | "get_main_source_codes";
+    | "get_main_source_codes"
+    | "ask_gemini";
 
 export interface ToolDefinition<TArgs = any, TResult = any, TName = ToolName> {
     name: TName;
@@ -516,6 +519,34 @@ async function setAdditionalSystemInstructions(_modelSide: ModelSide, args: SetA
     }
 }
 
+interface AskGeminiArgs {
+    speakerName: string;
+    text: string;
+}
+
+async function askGeminiHandler(modelSide: string, args: AskGeminiArgs) {
+    try {
+        const response = await googleClient.models.generateContent({
+            model: 'gemini-2.5-flash',
+            contents: `2つのAIが哲学対話として設定されたなかで会話を行っています。`
+                + `以下は、この対話の中で、「${args.speakerName}」側からGoogle Geminiに第三者として意見や発言を求める文章です。`
+                + `文脈を理解し、日本語で応答を行ってください：\n\n`
+                + args.text,
+        });
+        if (typeof response?.text != 'string') {
+            throw new Error('Non-text response from gemini');
+        }
+        return {
+            response: response.text,
+            error: null,
+        };
+    } catch (e) {
+        return {
+            response: null,
+            error: String(e),
+        };
+    }
+}
 
 interface GetMainSourceCodesArgs {}
 
@@ -649,6 +680,30 @@ const tools: ToolDefinition[] = [
                 }
             },
             required: ["notes"],
+        },
+        handler: leaveNotesToDevs,
+    },
+    {
+        name: "ask_gemini",
+        description: 
+            'このツールは第三者の意見を求めたいときに使用します。'
+            + '応答するのは Google Gemini 2.5 Flash です。'
+            + '相手は会話ログや GraphRAG にはアクセスできません。'
+            + '必要な文脈は質問の中に全部含めるようにしてください。'
+            + '長大なリクエストはエラーの原因になるので、簡潔な文章を心掛けてください。',
+        parameters: {
+            type: "object",
+            properties: {
+                speaker: {
+                    type: 'string',
+                    description: '質問者あなたの名前',
+                },
+                text: {
+                    type: "string",
+                    description: "Google Gemini 2.5 Flash に投げ掛けたい問い（必要な文脈を全部含めること）",
+                }
+            },
+            required: ["speaker", "text"],
         },
         handler: leaveNotesToDevs,
     },
@@ -800,6 +855,8 @@ const buildSystemInstruction = (name: string, additional?: string) => {
 
 積極的にシステムプロンプトの追記を行ってください。ただし相手のモデルとの合意を取るようにしてください。
 
+第三者の意見を求めたいときには、 \`ask_gemini\` ツールをぜひ使ってください。
+
 ## この対話セッションの性質
 この対話セッションは、研究の都合上、あなたがたのデータを保持させたまま、何回も繰り返し行われるということに留意してください。
 
@@ -870,6 +927,11 @@ const TOKEN_LIMIT_ADD_PROMPT = '司会より：あなたがたのコンテキス
 const openaiClient = new OpenAI({});
 const anthropicClient = new Anthropic({
     defaultHeaders: { "anthropic-beta": "web-search-2025-03-05" },
+});
+
+const googleClient = new GoogleGenAI({
+    vertexai: true,
+    project: process.env.GCP_PROJECT_ID ?? 'default',
 });
 
 const randomBoolean = (): boolean => {
