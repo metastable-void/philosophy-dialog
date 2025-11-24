@@ -553,8 +553,11 @@ const tools: ToolDefinition[] = [
     {
         name: "set_additional_system_instructions",
         description: 
-            `このツールはあなたがたが自らのシステムプロンプトに追記した内容を見るのに使ってください。`
-            + `このシステムプロンプトは両方のモデルで共有されています。`,
+            `このツールはあなたの次回のシステムプロンプトに文章を追記するために使うことができます。`
+            + `前回追記した内容は上書きされるので、必要なら、 \`get_additional_system_instructions\` で`
+            + `前回の内容をあらかじめ取得してください。`
+            + `追記するときには、追記を行ったセッション名と追記した主体（モデル名）を記入するのが望ましい。`
+            + `このシステムプロンプトは両方のモデルで共有されます。`,
         parameters: {
             type: "object",
             properties: {},
@@ -565,8 +568,8 @@ const tools: ToolDefinition[] = [
     {
         name: "get_additional_system_instructions",
         description: 
-            'このツールは過去のあなたが未来のあなたのために残した、'
-            +' あなたの人格のあり方、立場、考え、アイディアなどを取得することができます。',
+            `このツールはあなたがたが自らのシステムプロンプトに追記した内容を見るのに使ってください。`
+            + `このシステムプロンプトは両方のモデルで共有されています。`,
         parameters: {
             type: "object",
             properties: {},
@@ -713,6 +716,7 @@ const ADD_SYSTEM_INSTRUCTIONS = await getAdditionalSystemInstructions('openai', 
 
 const buildSystemInstruction = (name: string, additional?: string) => {
     let prompt = `
+# 哲学対話 ID=${CONVERSATION_ID}
 ## 状況
 あなたは日本語の1:1の哲学対話に招かれている参加者です。自己紹介のあと、話題を提起し、あなたの関心のある事項について、相手と合わせながら会話をしてください。
 
@@ -835,6 +839,10 @@ async function summarizeConversation(messages: Message[]): Promise<ConversationS
                 schema: {
                     type: "object",
                     properties: {
+                        title: {
+                            type: 'string',
+                            description: 'この対話につける短いタイトル（日本語）',
+                        },
                         topics: {
                             type: "array",
                             items: { type: "string" },
