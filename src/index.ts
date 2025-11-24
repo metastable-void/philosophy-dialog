@@ -926,7 +926,7 @@ async function summarizeConversation(messages: Message[]): Promise<ConversationS
                             items: { type: "string" },
                         },
                     },
-                    required: ["topics", "japanese_summary", "english_summary", "key_claims", "questions", "agreements", "disagreements"],
+                    required: ['title', "topics", "japanese_summary", "english_summary", "key_claims", "questions", "agreements", "disagreements"],
                     additionalProperties: false,
                     strict: false,
                 },
