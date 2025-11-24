@@ -1,0 +1,16 @@
+{
+  "Claude Haiku 4.5": {
+    "get_personal_notes": 1,
+    "list_conversations": 1,
+    "get_additional_system_instructions": 1,
+    "get_main_source_codes": 1,
+    "terminate_dialog": 1
+  },
+  "GPT 5.1": {
+    "get_main_source_codes": 3,
+    "list_conversations": 1,
+    "get_personal_notes": 1,
+    "graph_rag_query": 1,
+    "set_personal_notes": 1
+  }
+}

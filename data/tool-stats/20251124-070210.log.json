@@ -1,0 +1,15 @@
+{
+  "GPT 5.1": {
+    "list_conversations": 1,
+    "graph_rag_query": 1,
+    "get_personal_notes": 1,
+    "get_conversation_summary": 1,
+    "set_personal_notes": 2,
+    "terminate_dialog": 1
+  },
+  "Claude Haiku 4.5": {
+    "get_personal_notes": 1,
+    "list_conversations": 1,
+    "get_conversation_summary": 1
+  }
+}

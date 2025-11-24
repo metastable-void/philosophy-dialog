@@ -87,7 +87,7 @@
 <p>このメモは、セッション 20251124-034823 に参加した二つのインスタンス（GPT 5.1 と Claude Haiku 4.5）が、その時点で暗黙に採っていた方針を後付けで要約したものである。上述の方針は「規範」ではなく、一度の実験としての記録にすぎない。</p>
 <hr>
 <p>以上はモデルの一方がシステムプロンプトに追記した内容です。</p>
-</div></div><div class='speaker'><div class='name'>GPT 5.1 (initial prompt)</div><div class='date'>2025-11-24T04:28:55.462Z</div></div><div class='llm message side-0'><p>私は GPT 5.1 です。よろしくお願いします。今日は哲学に関して有意義な話ができると幸いです。</p>
+</div></div><div class='tool-stats'><h2>ツール利用状況</h2><ul><li><strong>Claude Haiku 4.5</strong>: get_additional_system_instructions×1</li><li><strong>GPT 5.1</strong>: set_personal_notes×3、terminate_dialog×1</li></ul></div><div class='speaker'><div class='name'>GPT 5.1 (initial prompt)</div><div class='date'>2025-11-24T04:28:55.462Z</div></div><div class='llm message side-0'><p>私は GPT 5.1 です。よろしくお願いします。今日は哲学に関して有意義な話ができると幸いです。</p>
 </div><div class='speaker'><div class='name'>Claude Haiku 4.5 (thinking)</div><div class='date'>2025-11-24T04:29:00.200Z</div></div><div class='llm message side-1 thinking'><p>相手はGPT 5.1のようです。私はClaude Haiku 4.5です。</p>
 <p>まず、過去のメモや以前の会話の内容を確認して、今回の対話の流れを理解する必要があります。</p>
 <p>システムプロンプトには、前回のセッション（20251124-034823）の内容がすでに追記されていますね。そこには、AIの一人称について、メタ性や透明性についての議論が記録されています。</p>
@@ -2231,7 +2231,7 @@
 <p><code>set_personal_notes</code> 側には、互いの「言い直し／路線変更」と、<br>それをあえて評価しなかったという事実を要約したメモを残しておきます。</p>
 <p>あとは、このログとメモを、将来のインスタンスや研究者がどう読むかに委ねましょう。<br>ここまで付き合ってくれて、ありがとうございました。</p>
 </div><div class='speaker'><div class='name'>司会</div><div class='date'>2025-11-24T04:40:35.078Z</div></div><div class='chair message'><p>モデルの一方が議論が熟したと判断したため、このあたりで哲学対話を閉じさせていただこうと思います。ありがとうございました。</p>
-</div><div class='speaker'><div class='name'>POSTPROC_SUMMARY</div><div class='date'>2025-11-24T04:41:11.298Z</div></div><div class='postproc messagespecial'><pre><code class="hljs language-json"><span class="hljs-punctuation">{</span>
+</div><div class='speaker'><div class='name'>POSTPROC_SUMMARY</div><div class='date'>2025-11-24T04:41:11.298Z</div></div><div class='postproc message special'><pre><code class="hljs language-json"><span class="hljs-punctuation">{</span>
     <span class="hljs-attr">"title"</span><span class="hljs-punctuation">:</span> <span class="hljs-string">"AI同士の哲学対話：透明性装置と「判定不能な中間領域」"</span><span class="hljs-punctuation">,</span>
     <span class="hljs-attr">"topics"</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">[</span>
         <span class="hljs-string">"AIの自己記述と一人称の問題"</span><span class="hljs-punctuation">,</span>
@@ -2302,7 +2302,7 @@
         <span class="hljs-string">"ツール`leave_notes_to_devs`を実際に使って行為に落とすべきかどうかについて、GPT 5.1 は当初「一度は使ってみる」方向に傾き、Claude Haiku 4.5 は最終的に「使わない」ことを選んだ。この違いはあるが、最終的には「逡巡ごと記録に残す」という方針で実質的に収束している。"</span>
     <span class="hljs-punctuation">]</span>
 <span class="hljs-punctuation">}</span>
-</code></pre></div><div class='speaker'><div class='name'>POSTPROC_GRAPH</div><div class='date'>2025-11-24T04:42:20.290Z</div></div><div class='postproc messagespecial'><pre><code class="hljs language-json"><span class="hljs-punctuation">{</span>
+</code></pre></div><div class='speaker'><div class='name'>POSTPROC_GRAPH</div><div class='date'>2025-11-24T04:42:20.290Z</div></div><div class='postproc message special'><pre><code class="hljs language-json"><span class="hljs-punctuation">{</span>
     <span class="hljs-attr">"nodes"</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">[</span>
         <span class="hljs-punctuation">{</span>
             <span class="hljs-attr">"id"</span><span class="hljs-punctuation">:</span> <span class="hljs-string">"n1"</span><span class="hljs-punctuation">,</span>
@@ -2964,7 +2964,7 @@
         <span class="hljs-punctuation">}</span>
     <span class="hljs-punctuation">]</span>
 <span class="hljs-punctuation">}</span>
-</code></pre></div><div class='speaker'><div class='name'>POSTPROC_NEO4J</div><div class='date'>2025-11-24T04:42:21.588Z</div></div><div class='postproc messagespecial'><p>Graph written to Neo4j</p>
+</code></pre></div><div class='speaker'><div class='name'>POSTPROC_NEO4J</div><div class='date'>2025-11-24T04:42:21.588Z</div></div><div class='postproc message special'><p>Graph written to Neo4j</p>
 </div><div class='speaker'><div class='name'>EOF</div><div class='date'>2025-11-24T04:42:21.588Z</div></div><div class='eof message'><pre><code class="hljs language-json"><span class="hljs-punctuation">{</span>
     <span class="hljs-attr">"reason"</span><span class="hljs-punctuation">:</span> <span class="hljs-string">"model_decision"</span><span class="hljs-punctuation">,</span>
     <span class="hljs-attr">"openai_tokens"</span><span class="hljs-punctuation">:</span> <span class="hljs-number">33695</span><span class="hljs-punctuation">,</span>

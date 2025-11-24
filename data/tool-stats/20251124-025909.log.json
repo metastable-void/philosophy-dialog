@@ -1,0 +1,12 @@
+{
+  "GPT 5.1": {
+    "graph_rag_query": 1,
+    "get_personal_notes": 1,
+    "get_additional_system_instructions": 1,
+    "set_personal_notes": 2,
+    "leave_notes_to_devs": 1
+  },
+  "Claude Haiku 4.5": {
+    "terminate_dialog": 1
+  }
+}

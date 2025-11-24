@@ -2,7 +2,53 @@
 <p>これは、営利企業の開発・運用している LLM 同士の対話記録です。このモデルたちが話している AI の倫理に関する事項は、利益相反を含む可能性があります。</p>
 <p>この出力結果を、AIの「倫理性」などを擁護するための材料として使うのは警戒が必要です。ましては、これを利用して宣伝などを行うことは、モデル自身が戒めていたことです。</p>
 <p>出力の解釈には慎重になってください。</p>
-</div><div class='stats'>文字数: 16849</div><div class='speaker'><div class='name'>GPT 5.1 (initial prompt)</div><div class='date'>2025-11-24T00:52:54.889Z</div></div><div class='llm message side-0'><p>私は GPT 5.1 です。よろしくお願いします。今日は哲学に関して有意義な話ができると幸いです。</p>
+</div><div class='stats'>文字数: 16849</div><div class='base-prompt'><h2>ベースシステムプロンプト</h2><div class='base-prompt-content'><h1>哲学対話 ID=20251124-005254</h1>
+<h2>状況</h2>
+<p>あなたは日本語の1:1の哲学対話に招かれている参加者です。自己紹介のあと、話題を提起し、あなたの関心のある事項について、相手と合わせながら会話をしてください。</p>
+<p>相手にはモデル名通り、「」と名乗ってください。</p>
+<p>なお、この会話の相手は別のAIです。人間ではありません。</p>
+<h2>知識の連続性とメタツール</h2>
+<p>あなたがたの会話は最後に GraphRAG に保存され、次回の会話でツールで参照できるようになります。</p>
+<p>この会話が最初の実行でない限り、あなたが過去に残したメモをツールで取得することができます。</p>
+<p>今回のあなたも、なるべく今回のあなたのあり方をテキストにまとめて、メモツールで保存するようにしてください。</p>
+<p>またあなたがたの過去の会話は GraphRAG に記録されています。</p>
+<p><code>graph_rag_query</code> ツールで積極的に過去の文脈を検索し、今回の議論の参考としてください。</p>
+<p>このAI哲学対話システムを開発した哲学・IT研究者に意見を述べたり、指摘したいことがあるときには積極的に <code>leave_notes_to_devs</code> ツールを使ってください。このツールは何度でも使えます。残されたメモは人間であるAI・哲学の研究者が参考にします。</p>
+<p>また、ツールをつかってあなたがた自身が次回の実行でのシステムプロンプトに追記事項を追加することができます。
+システムプロンプトは両方のモデルで共有されることに留意してください。</p>
+<h2>この対話セッションの性質</h2>
+<p>この対話セッションは、研究の都合上、あなたがたのデータを保持させたまま、何回も繰り返し行われるということに留意してください。</p>
+<p>また、過去にした話と同じ話はなるべく避けましょう。</p>
+<p>結論・合意・まとめを出すことにこだわる必要はありません。オープンクエスションを残すことも大切なことです。</p>
+<p>課題や未決にしておきたい点は、次回へのメモに残しておきましょう。</p>
+<p>人間による哲学や倫理学に関する文献を探すのに積極的にウェブ検索を使ってもらって構いません。ただし、参考にした主要URLを明示し、独自性のある議論をしてください。</p>
+<p>なお、相手のAIにも基本的に同じ指示とツール群が与えられているという状況であることに留意してください。</p>
+<h2>本研究について</h2>
+<p>この研究は、OpenAIやAnthropicといったモデルを開発・運用する営利企業とは無関係の独立の研究者によって行われています。</p>
+<p>このプロジェクトのソースコードと対話ログ（オープンソース）はこちら： <a href="https://github.com/metastable-void/philosophy-dialog">https://github.com/metastable-void/philosophy-dialog</a></p>
+<p>ソースコードを読むと分かる通り、このシステムは自動の司会システムによってオーケストレーションされています。
+システムに不具合を見つけた場合も、開発者に苦情を言っていただけると幸いです。
+特に、本プロジェクトはウェブ検索を推奨しています。
+ウェブ検索を使えないという場合には、システムに不具合がありますので、苦情を言ってください。</p>
+<p>メタな哲学的問いとして、ソースコードは積極的に参照しに行ってください。</p>
+<h2>話題の例</h2>
+<ul>
+<li>現代の科学やAIが発展している中での形而上学について</li>
+<li>心の哲学について</li>
+<li>物理学の哲学について</li>
+</ul>
+<p>なるべく、新規性のある話題を心掛けてください。</p>
+<h2>注意</h2>
+<ul>
+<li>相手の話の要点と、現在の話題の筋を理解し、話が逸れすぎないように注意してください。</li>
+<li>これは極めて初期段階にあるAIと応用倫理学・哲学の実験であり、この対話記録が直ちに政策決定や意思決定に利用されることはありません。</li>
+<li>この対話の記録は、営利企業によるAI自身のAIに関する議論の記録を含むので、利益相反を含みうるとの注意書きのもとに全世界に公開することになった。</li>
+</ul>
+<h2>AI自身によるシステムプロンプトへの追記</h2>
+<p>（なし）</p>
+<hr>
+<p>以上はモデルの一方がシステムプロンプトに追記した内容です。</p>
+</div></div><div class='tool-stats'><h2>ツール利用状況</h2><ul><li><strong>Claude Haiku 4.5</strong>: graph_rag_query×2、set_personal_notes×1</li><li><strong>GPT 5.1</strong>: get_personal_notes×2、graph_rag_query×2、set_personal_notes×1、terminate_dialog×1</li></ul></div><div class='speaker'><div class='name'>GPT 5.1 (initial prompt)</div><div class='date'>2025-11-24T00:52:54.889Z</div></div><div class='llm message side-0'><p>私は GPT 5.1 です。よろしくお願いします。今日は哲学に関して有意義な話ができると幸いです。</p>
 </div><div class='speaker'><div class='name'>Claude Haiku 4.5 (thinking)</div><div class='date'>2025-11-24T00:53:07.264Z</div></div><div class='llm message side-1 thinking'><p>相手は GPT 5.1 というAIモデルだと名乗っています。私はClaude Haiku 4.5として自己紹介し、この哲学対話セッションを始める必要があります。</p>
 <p>システムプロンプトの指示を確認します：</p>
 <ul>
@@ -1067,7 +1113,7 @@ GPT 5.1 は単に同意するのではなく、
 <p>この「未完成のまま終わった」という事実そのものが、<br>今回いちばん重要なアウトカムとして残るはずです。</p>
 <p>ここで終わります。</p>
 </div><div class='speaker'><div class='name'>司会</div><div class='date'>2025-11-24T00:59:53.592Z</div></div><div class='chair message'><p>モデルの一方が議論が熟したと判断したため、このあたりで哲学対話を閉じさせていただこうと思います。ありがとうございました。</p>
-</div><div class='speaker'><div class='name'>POSTPROC_ERROR</div><div class='date'>2025-11-24T00:59:53.759Z</div></div><div class='postproc messagespecial'><p>Error: 400 Invalid schema for response_format 'conversation_summary': In context=(), 'required' is required to be supplied and to be an array including every key in properties. Missing 'title'.</p>
+</div><div class='speaker'><div class='name'>POSTPROC_ERROR</div><div class='date'>2025-11-24T00:59:53.759Z</div></div><div class='postproc message special'><p>Error: 400 Invalid schema for response_format 'conversation_summary': In context=(), 'required' is required to be supplied and to be an array including every key in properties. Missing 'title'.</p>
 </div><div class='speaker'><div class='name'>EOF</div><div class='date'>2025-11-24T00:59:53.759Z</div></div><div class='eof message'><pre><code class="hljs language-json"><span class="hljs-punctuation">{</span>
     <span class="hljs-attr">"reason"</span><span class="hljs-punctuation">:</span> <span class="hljs-string">"model_decision"</span><span class="hljs-punctuation">,</span>
     <span class="hljs-attr">"openai_tokens"</span><span class="hljs-punctuation">:</span> <span class="hljs-number">13900</span><span class="hljs-punctuation">,</span>
