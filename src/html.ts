@@ -165,7 +165,7 @@ export const output_to_html = (jsonl_path: string) => {
 
     body += `<div class='stats'>文字数: ${codePointsCount}</div>`;
 
-    body += `<div class='base-prompt'><h2>ベースシステムプロンプト</h2><div class='base-prompt-content'>${safeMarkdown(baseSystemPrompt)}</div></div>`;
+    body += `<details class='base-prompt'><summary>ベースシステムプロンプト</summary><div class='base-prompt-content'>${safeMarkdown(baseSystemPrompt)}</div></details>`;
     body += renderToolStats(toolStats);
 
     let side = 0;
