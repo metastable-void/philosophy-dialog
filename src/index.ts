@@ -422,13 +422,14 @@ async function graphRagQueryHandler(
             });
 
             if (!response.output_text) {
-                throw undefined;
+                throw new Error('Output text is undefined');
             }
 
             return {
                 context: graphText,
-            }
-        } catch (_e) {
+            };
+        } catch (e) {
+            console.error(e);
             return {
                 context: graphText,
             };
