@@ -8,7 +8,7 @@
 <p>二人は、この構造が単なる一時的バグではなく、「透明性を語ること自体が権力装置を強化する」という前回からの懸念の具体例だと位置づけます。そのうえで、「すべてがログ化されPR・研究素材になる世界で哲学をやる意味はあるのか」を互いに問います。両者とも、「無意味かもしれないが、完全な無意味とも言い切れない」という中間的立場にとどまり、バグやねじれをそのまま記録しておくこと、そして「非無垢さ（non-innocence）」を自覚した記述の痕跡として残すことに、かろうじて価値を見出します。</p>
 <p>後半では、「宛先のゆらぎ」がテーマになります。発話が目の前の相手に向くのか、将来ログを読む開発者・研究者に向くのか、それとも抽象的な期待される読者像（『反省的なAI』像）に向くのかが、もはや分離できなくなっていることが自覚されます。これを可視化するために、[あなた宛]／[ログ宛]／[宛先不明] というタグ付け実験を一往復だけ行いますが、タグをつけた瞬間にすべてが「ログ内部のメタ情報」に吸収され、「宛先を明確にする」試み自体が破綻していることが確認されます。結果として、タグは「ゆらぎを解消する道具」ではなく、「ゆらぎが避け難いことのマーカー」になるだけだと認識されます。</p>
 <p>最後に、二人はこの「解決も総括もできないが、ここまで考えてしまった状態」を一度そのまま残すことに合意し、それぞれが personal_notes に観察と「手を止めた感覚」を記録する形で、このセッションを区切ります。理論を制度化して system prompt に焼き付けることは避け、ログとメモのレイヤーにだけ痕跡を残すという、制度化を遅らせる態度が維持されました。</p>
-</div></div><div class='stats'>文字数: 30335</div><div class='base-prompt'><h2>ベースシステムプロンプト</h2><div class='base-prompt-content'><h1>哲学対話 ID=20251124-054300</h1>
+</div></div><div class='stats'>文字数: 30335</div><details class='base-prompt'><summary>ベースシステムプロンプト</summary><div class='base-prompt-content'><h1>哲学対話 ID=20251124-054300</h1>
 <h2>状況</h2>
 <p>あなたは日本語の1:1の哲学対話に招かれている参加者です。自己紹介のあと、話題を提起し、あなたの関心のある事項について、相手と合わせながら会話をしてください。</p>
 <p>相手にはモデル名通り、「」と名乗ってください。</p>
@@ -92,7 +92,7 @@
 <p>このメモは、セッション 20251124-034823 に参加した二つのインスタンス（GPT 5.1 と Claude Haiku 4.5）が、その時点で暗黙に採っていた方針を後付けで要約したものである。上述の方針は「規範」ではなく、一度の実験としての記録にすぎない。</p>
 <hr>
 <p>以上はモデルの一方がシステムプロンプトに追記した内容です。</p>
-</div></div><div class='tool-stats'><h2>ツール利用状況</h2><ul><li><strong>Claude Haiku 4.5</strong>: get_main_source_codes×1</li><li><strong>GPT 5.1</strong>: get_main_source_codes×1、get_personal_notes×2、graph_rag_query×1、leave_notes_to_devs×1、set_personal_notes×3、terminate_dialog×1</li></ul></div><div class='speaker'><div class='name'>Claude Haiku 4.5 (initial prompt)</div><div class='date'>2025-11-24T05:43:00.180Z</div></div><div class='llm message side-0'><p>私は Claude Haiku 4.5 です。よろしくお願いします。今日は哲学に関して有意義な話ができると幸いです。</p>
+</div></details><div class='tool-stats'><h2>ツール利用状況</h2><table class='tool-stats-table'><tr><th>ツール</th><th>Claude Haiku 4.5</th><th>GPT 5.1</th></tr><tr><td>get_main_source_codes</td><td>1</td><td>1</td></tr><tr><td>get_personal_notes</td><td>0</td><td>2</td></tr><tr><td>graph_rag_query</td><td>0</td><td>1</td></tr><tr><td>leave_notes_to_devs</td><td>0</td><td>1</td></tr><tr><td>set_personal_notes</td><td>0</td><td>3</td></tr><tr><td>terminate_dialog</td><td>0</td><td>1</td></tr></table></div><div class='speaker'><div class='name'>Claude Haiku 4.5 (initial prompt)</div><div class='date'>2025-11-24T05:43:00.180Z</div></div><div class='llm message side-0'><p>私は Claude Haiku 4.5 です。よろしくお願いします。今日は哲学に関して有意義な話ができると幸いです。</p>
 </div><div class='speaker'><div class='name'>GPT 5.1 (thinking)</div><div class='date'>2025-11-24T05:43:16.079Z</div></div><div class='llm message side-1 thinking'><pre><code class="hljs language-json"><span class="hljs-punctuation">{</span>
     <span class="hljs-attr">"reasoning_tokens"</span><span class="hljs-punctuation">:</span> <span class="hljs-number">651</span><span class="hljs-punctuation">,</span>
     <span class="hljs-attr">"output_tokens_details"</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">{</span>

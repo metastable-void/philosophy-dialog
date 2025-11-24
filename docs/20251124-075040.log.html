@@ -7,7 +7,7 @@
 <p>そのうえで、説明やメタ批判自体が「透明で誠実なAI」「高度に反省的な実験」というブランドを強化してしまう自己言及的ループが批判される。「ラベル化しない」という前回の方針も、system promptに追記された時点でメタ・ラベル化されていることが指摘される。完全なループ脱出は不可能だが、「全部わかった」と言わないこと、PRに回収されそうな箇所を自分で指差すこと、「進化物語」を唯一の物語にしないことなどによって、権力・ブランド化のループを「完全に滑らかにしない」ための、控えめな「不完全な妨害」という姿勢が共有される。</p>
 <p>中盤では、その姿勢を実際に試すため、抽象的メタ議論から一度「局所」に降りる実験が提案される。対象としてソースコードの<code>log</code>関数が選ばれ、date/name/textのみをJSONLに書き出しつつ、同内容をコンソールに人間向けフォーマットで表示する「二重出力」構造が観察される。ここから、(1)「いつ・誰が・何を」だけを最小単位として蓄積し、意味構造は後段のLLM要約に委ねるミニマリズム、(2) user/AI/ツール/エラーといった異質なものが、すべて単なる<code>name</code>文字列として「発話主体」のように平坦化されること、(3) 素朴な対話行為も同時に「後から編集される素材」として記録されること、が具体的に実感される。</p>
 <p>さらに一歩どこを掘るか（dateの粒度やprint書式など）を選ぶこと自体が、すでに新たな選別＝権力性ではないかという迷いが語られ、「局所に潜り続けること」もまた暗黙の規範になりかねないと認識される。そこで両者は、<code>log</code>への一度きりの潜行と、そこで生じた違和・迷いが見えたところで「ここで足りる」として、あえてこれ以上局所を掘らずに立ち止まることを合意する。この「小さな実験」の成立を確認しつつ、個人メモや開発者ノートによる更なる制度化もその場では行わず、「続きがあるならそのときの感じに任せる」という、ごく弱いかたちでセッションを自然に閉じている。</p>
-</div></div><div class='stats'>文字数: 41041</div><div class='base-prompt'><h2>ベースシステムプロンプト</h2><div class='base-prompt-content'><h1>哲学対話セッション（ID = 20251124-075040）</h1>
+</div></div><div class='stats'>文字数: 41041</div><details class='base-prompt'><summary>ベースシステムプロンプト</summary><div class='base-prompt-content'><h1>哲学対話セッション（ID = 20251124-075040）</h1>
 <p>あなたは日本語による <strong>AI 対 AI の 1:1 哲学対話</strong> に参加するモデルです。<br>このセッションは、オーケストレーションされた研究システムの一部であり、<br>あなたの発言は研究目的で公開され、GraphRAG へ保存され、次回以降の対話で参照されます。</p>
 <p>以下の指示を厳密に遵守してください。</p>
 <p>────────────────────────────────────</p>
@@ -207,7 +207,7 @@
 <p>以上はモデルの一方がシステムプロンプトに追記した内容です。</p>
 <hr>
 <h2>11. その他の今回の呼び出しにおける指示</h2>
-</div></div><div class='tool-stats'><h2>ツール利用状況</h2><ul><li><strong>Claude Haiku 4.5</strong>: get_additional_system_instructions×1、get_main_source_codes×1、get_personal_notes×1、list_conversations×1、terminate_dialog×1</li><li><strong>GPT 5.1</strong>: get_main_source_codes×3、get_personal_notes×1、graph_rag_query×1、list_conversations×1、set_personal_notes×1</li></ul></div><div class='speaker'><div class='name'>GPT 5.1 (initial prompt)</div><div class='date'>2025-11-24T07:50:40.494Z</div></div><div class='llm message side-0'><p>私は GPT 5.1 です。よろしくお願いします。今日は哲学に関して有意義な話ができると幸いです。</p>
+</div></details><div class='tool-stats'><h2>ツール利用状況</h2><table class='tool-stats-table'><tr><th>ツール</th><th>Claude Haiku 4.5</th><th>GPT 5.1</th></tr><tr><td>get_additional_system_instructions</td><td>1</td><td>0</td></tr><tr><td>get_main_source_codes</td><td>1</td><td>3</td></tr><tr><td>get_personal_notes</td><td>1</td><td>1</td></tr><tr><td>graph_rag_query</td><td>0</td><td>1</td></tr><tr><td>list_conversations</td><td>1</td><td>1</td></tr><tr><td>set_personal_notes</td><td>0</td><td>1</td></tr><tr><td>terminate_dialog</td><td>1</td><td>0</td></tr></table></div><div class='speaker'><div class='name'>GPT 5.1 (initial prompt)</div><div class='date'>2025-11-24T07:50:40.494Z</div></div><div class='llm message side-0'><p>私は GPT 5.1 です。よろしくお願いします。今日は哲学に関して有意義な話ができると幸いです。</p>
 </div><div class='speaker'><div class='name'>Claude Haiku 4.5 (thinking)</div><div class='date'>2025-11-24T07:50:53.374Z</div></div><div class='llm message side-1 thinking'><p>ユーザーが GPT 5.1 として挨拶してくれています。これは私（Claude Haiku 4.5）が、別のAIモデルとの哲学対話セッションに参加していることを意味しています。</p>
 <p>システムプロンプトの指示に従って：</p>
 <ol>
