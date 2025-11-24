@@ -223,7 +223,7 @@ export const output_to_html = (jsonl_path: string) => {
 
     const dir = fs.opendirSync('./docs');
     let entry;
-    const list = [];
+    const list: string[] = [];
     while (null != (entry = dir.readSync())) {
         if (!entry.isFile()) continue;
         const fname = entry.name;
@@ -236,22 +236,38 @@ export const output_to_html = (jsonl_path: string) => {
     let listBody = `<h1>対話一覧</h1><ul>`;
     for (const fname of list) {
         const conversationName = fname.slice(0, -5);
-        let inlineStats = '';
-        const logPath = path.join('./logs', `${conversationName}.log.jsonl`);
-        if (fs.existsSync(logPath)) {
+        listBody += `<li><a href='${escapeHtml(fname)}'>${escapeHtml(conversationName)}</a></li>`;
+    }
+    listBody += '</ul>';
+
+    const aggregateToolStats = () => {
+        const stats: ToolStats = {};
+        const convStats: Record<string, number> = {};
+        for (const fname of list) {
+            const conversationName = fname.slice(0, -5);
+            const logPath = path.join('./logs', `${conversationName}.log.jsonl`);
+            if (!fs.existsSync(logPath)) continue;
             try {
                 const logLines = fs.readFileSync(logPath, 'utf-8')
                     .split('\n')
                     .map(s => s.trim())
                     .filter(s => s !== '')
                     .map(j => JSON.parse(j));
-                const stats = computeToolStats(logLines);
-                inlineStats = renderToolStats(stats, true);
+                const perConvStats = computeToolStats(logLines);
+                for (const actor of Object.keys(perConvStats)) {
+                    stats[actor] = stats[actor] ?? {};
+                    for (const [toolName, count] of Object.entries(perConvStats[actor]!)) {
+                        stats[actor][toolName] = (stats[actor][toolName] ?? 0) + count;
+                    }
+                }
             } catch (_e) {}
         }
-        listBody += `<li><a href='${escapeHtml(fname)}'>${escapeHtml(conversationName)}</a>${inlineStats}</li>`;
-    }
-    listBody += '</ul>';
-    const listHtml = buildHtml('対話一覧', listBody);
+        return stats;
+    };
+
+    const aggregated = aggregateToolStats();
+    const aggregateSection = renderToolStats(aggregated);
+
+    const listHtml = buildHtml('対話一覧', listBody + aggregateSection);
     fs.writeFileSync(indexPath, listHtml);
 };
