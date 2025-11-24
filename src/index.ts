@@ -1747,11 +1747,11 @@ const anthropicTurn = async () => {
                 content: assistantBlocks,
             });
 
-            const toolUse = assistantBlocks.find(
+            const toolUses = assistantBlocks.filter(
                 (block): block is Anthropic.Messages.ToolUseBlock => block.type === 'tool_use'
             );
 
-            if (!toolUse) {
+            if (toolUses.length === 0) {
                 const latestText = [...assistantBlocks].reverse().find(
                     (block): block is Anthropic.Messages.TextBlock => block.type === 'text'
                 );
@@ -1765,30 +1765,39 @@ const anthropicTurn = async () => {
                 break;
             }
 
-            const tool = findTool(toolUse.name);
-            logToolEvent(
-                ANTHROPIC_NAME,
-                'call',
-                { tool: toolUse.name, args: toolUse.input },
-            );
-            const result = await tool.handler('anthropic', toolUse.input);
-            logToolEvent(
-                ANTHROPIC_NAME,
-                'result',
-                { tool: toolUse.name, result },
-            );
+            const toolResultBlocks: Anthropic.Messages.ToolResultBlockParam[] = [];
+            let terminateCalled = false;
+
+            for (const use of toolUses) {
+                const tool = findTool(use.name);
+                logToolEvent(
+                    ANTHROPIC_NAME,
+                    'call',
+                    { tool: use.name, args: use.input },
+                );
+                const result = await tool.handler('anthropic', use.input);
+                logToolEvent(
+                    ANTHROPIC_NAME,
+                    'result',
+                    { tool: use.name, result },
+                );
+                toolResultBlocks.push({
+                    type: "tool_result",
+                    tool_use_id: use.id,
+                    content: [{ type: "text", text: JSON.stringify(result) }],
+                });
+                if (use.name === 'terminate_dialog') {
+                    terminateCalled = true;
+                }
+            }
 
             msgs.push({
                 role: 'user',
-                content: [{
-                    type: "tool_result",
-                    tool_use_id: toolUse.id,
-                    content: [{ type: "text", text: JSON.stringify(result) }],
-                }],
+                content: toolResultBlocks,
             });
 
             extraInstruction =
-                toolUse.name === "terminate_dialog"
+                terminateCalled
                     ? TERMINATE_ADD_PROMPT
                     : (
                         hushFinish
