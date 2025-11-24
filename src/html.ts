@@ -42,6 +42,53 @@ const safeMarkdown = (md: string) => {
     return DOMPurify.sanitize(dirty);
 };
 
+type ToolStats = Record<string, Record<string, number>>;
+
+const computeToolStats = (lines: any[]): ToolStats => {
+    const stats: ToolStats = {};
+    for (const msg of lines) {
+        if (!msg || typeof msg.name !== 'string') continue;
+        if (!msg.name.endsWith(' (tool call)')) continue;
+        let payload: any;
+        try {
+            payload = JSON.parse(msg.text);
+        } catch (_e) {
+            continue;
+        }
+        const toolName = payload?.tool;
+        if (!toolName) continue;
+        const actor = msg.name.replace(/ \(tool call\)$/, '');
+        stats[actor] = stats[actor] ?? {};
+        stats[actor][toolName] = (stats[actor][toolName] ?? 0) + 1;
+    }
+    return stats;
+};
+
+const renderToolStats = (stats: ToolStats, inline = false): string => {
+    const actors = Object.keys(stats)
+        .filter(actor => stats[actor] && Object.keys(stats[actor]!).length > 0)
+        .sort();
+
+    if (actors.length === 0) {
+        return inline ? '' : `<div class='tool-stats'><h2>ツール利用状況</h2><p>ツール利用は記録されていません。</p></div>`;
+    }
+
+    const items = actors.map(actor => {
+        const toolEntries = Object.entries(stats[actor]!)
+            .sort(([a], [b]) => a.localeCompare(b));
+        const toolText = toolEntries
+            .map(([tool, count]) => `${escapeHtml(tool)}×${count}`)
+            .join('、');
+        return `<li><strong>${escapeHtml(actor)}</strong>: ${toolText}</li>`;
+    }).join('');
+
+    if (inline) {
+        return `<div class='tool-stats-inline'><ul>${items}</ul></div>`;
+    }
+
+    return `<div class='tool-stats'><h2>ツール利用状況</h2><ul>${items}</ul></div>`;
+};
+
 const buildHtml = (title: string, bodyHtml: string) => {
     let html = `<!DOCTYPE html><html lang='ja'><head>`
         + `<meta charset='utf-8'>`
@@ -67,6 +114,8 @@ export const NOTICES = `
 出力の解釈には慎重になってください。
 `;
 
+const TOOL_STATS_DIR = './data/tool-stats';
+
 export const output_to_html = (jsonl_path: string) => {
     const basename = path.basename(jsonl_path);
     const name = basename.slice(0, -6);
@@ -76,6 +125,13 @@ export const output_to_html = (jsonl_path: string) => {
         .map(s => s.trim())
         .filter(s => s != '')
         .map(j => JSON.parse(j));
+    const toolStats = computeToolStats(lines);
+    fs.mkdirSync(TOOL_STATS_DIR, { recursive: true });
+    fs.writeFileSync(
+        path.join(TOOL_STATS_DIR, `${name}.json`),
+        JSON.stringify(toolStats, null, 2),
+        'utf-8',
+    );
     
     body += `<div class='notices'>${safeMarkdown(NOTICES)}</div>`;
     const summaryDataLines = lines.filter(l => l.name == 'POSTPROC_SUMMARY');
@@ -110,6 +166,7 @@ export const output_to_html = (jsonl_path: string) => {
     body += `<div class='stats'>文字数: ${codePointsCount}</div>`;
 
     body += `<div class='base-prompt'><h2>ベースシステムプロンプト</h2><div class='base-prompt-content'>${safeMarkdown(baseSystemPrompt)}</div></div>`;
+    body += renderToolStats(toolStats);
 
     let side = 0;
     loop: for (const msg of lines) {
@@ -178,7 +235,21 @@ export const output_to_html = (jsonl_path: string) => {
     list.sort();
     let listBody = `<h1>対話一覧</h1><ul>`;
     for (const fname of list) {
-        listBody += `<li><a href='${escapeHtml(fname)}'>${escapeHtml(fname.slice(0, -5))}</a></li>`
+        const conversationName = fname.slice(0, -5);
+        let inlineStats = '';
+        const logPath = path.join('./logs', `${conversationName}.log.jsonl`);
+        if (fs.existsSync(logPath)) {
+            try {
+                const logLines = fs.readFileSync(logPath, 'utf-8')
+                    .split('\n')
+                    .map(s => s.trim())
+                    .filter(s => s !== '')
+                    .map(j => JSON.parse(j));
+                const stats = computeToolStats(logLines);
+                inlineStats = renderToolStats(stats, true);
+            } catch (_e) {}
+        }
+        listBody += `<li><a href='${escapeHtml(fname)}'>${escapeHtml(conversationName)}</a>${inlineStats}</li>`;
     }
     listBody += '</ul>';
     const listHtml = buildHtml('対話一覧', listBody);

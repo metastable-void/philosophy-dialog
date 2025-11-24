@@ -205,6 +205,12 @@ export async function writeGraphToNeo4j(
     }
 }
 
+const LOG_DIR = './logs';
+const LOG_FILE_SUFFIX = '.log.jsonl';
+const MAX_HISTORY_RESULTS = 100;
+const TOOL_STATS_DIR = './data/tool-stats';
+const PENDING_SYSTEM_INSTRUCTIONS_FILE = './data/pending-system-instructions.json';
+
 fs.mkdirSync('./logs', {
     recursive: true,
 });
@@ -212,11 +218,9 @@ fs.mkdirSync('./logs', {
 fs.mkdirSync('./data', {
     recursive: true,
 });
-
-const LOG_DIR = './logs';
-const LOG_FILE_SUFFIX = '.log.jsonl';
-const MAX_HISTORY_RESULTS = 100;
-const PENDING_SYSTEM_INSTRUCTIONS_FILE = './data/pending-system-instructions.json';
+fs.mkdirSync(TOOL_STATS_DIR, {
+    recursive: true,
+});
 
 const parseSummaryFromLogContent = (content: string): ConversationSummary | null => {
     const lines = content.split('\n');
@@ -251,6 +255,57 @@ const readSummaryFromLogFile = async (logPath: string): Promise<ConversationSumm
     }
 };
 
+type ToolUsageStats = Record<string, Record<string, number>>;
+
+const aggregateToolStats = (entries: any[]): ToolUsageStats => {
+    const stats: ToolUsageStats = {};
+    for (const entry of entries) {
+        if (!entry || typeof entry.name !== 'string') continue;
+        if (!entry.name.endsWith(' (tool call)')) continue;
+        let payload: any;
+        try {
+            payload = JSON.parse(entry.text);
+        } catch (_e) {
+            continue;
+        }
+        const toolName = payload?.tool;
+        if (!toolName) continue;
+        const actor = entry.name.replace(/ \(tool call\)$/, '');
+        stats[actor] = stats[actor] ?? {};
+        stats[actor][toolName] = (stats[actor][toolName] ?? 0) + 1;
+    }
+    return stats;
+};
+
+const loadToolUsageStats = async (conversationId: string): Promise<ToolUsageStats | null> => {
+    const statsPath = `${TOOL_STATS_DIR}/${conversationId}.json`;
+    try {
+        const text = await fs.promises.readFile(statsPath, 'utf-8');
+        return JSON.parse(text);
+    } catch (_e) {
+        // fallback to compute directly from log
+    }
+    const logPath = `${LOG_DIR}/${conversationId}${LOG_FILE_SUFFIX}`;
+    try {
+        const content = await fs.promises.readFile(logPath, 'utf-8');
+        const entries = content
+            .split('\n')
+            .map(line => line.trim())
+            .filter(line => line !== '')
+            .map(line => {
+                try {
+                    return JSON.parse(line);
+                } catch (_e) {
+                    return null;
+                }
+            })
+            .filter(Boolean);
+        return aggregateToolStats(entries);
+    } catch (_err) {
+        return null;
+    }
+};
+
 const getDate = () => {
     const d = new Date();
 
@@ -281,6 +336,7 @@ export type ToolName =
     | "list_conversations"
     | "get_conversation_summary"
     | "compare_conversation_themes"
+    | "get_tool_usage_stats"
     | "abort_process"
     | "sleep";
 
@@ -1042,6 +1098,17 @@ interface GetConversationSummaryResult {
     error?: string;
 }
 
+interface GetToolUsageStatsArgs {
+    conversation_id: string;
+}
+
+interface GetToolUsageStatsResult {
+    success: boolean;
+    conversation_id: string;
+    stats: ToolUsageStats | null;
+    error?: string;
+}
+
 async function compareConversationThemesHandler(
     _modelSide: ModelSide,
     args: CompareConversationThemesArgs
@@ -1153,6 +1220,47 @@ async function compareConversationThemesHandler(
             error: 'OpenAI での比較分析に失敗しました。',
         };
     }
+}
+
+async function getToolUsageStatsHandler(
+    _modelSide: ModelSide,
+    args: GetToolUsageStatsArgs
+): Promise<GetToolUsageStatsResult> {
+    const conversationId = (args?.conversation_id ?? '').trim();
+    if (!conversationId) {
+        return {
+            success: false,
+            conversation_id: '',
+            stats: null,
+            error: 'conversation_id を指定してください。',
+        };
+    }
+
+    const stats = await loadToolUsageStats(conversationId);
+    if (!stats) {
+        const logExists = await fs.promises.access(`${LOG_DIR}/${conversationId}${LOG_FILE_SUFFIX}`)
+            .then(() => true)
+            .catch(() => false);
+        return {
+            success: false,
+            conversation_id: conversationId,
+            stats: null,
+            error: logExists
+                ? 'ツール利用統計を取得できませんでした。'
+                : '指定したセッションIDのログが見つかりません。',
+        };
+    }
+
+    const hasUsage = Object.keys(stats).some(
+        actor => stats[actor] && Object.keys(stats[actor]!).length > 0
+    );
+
+    return {
+        success: true,
+        conversation_id: conversationId,
+        stats,
+        error: hasUsage ? undefined : '記録されたツール利用はありません。',
+    };
 }
 
 const tools: ToolDefinition[] = [
@@ -1366,6 +1474,22 @@ const tools: ToolDefinition[] = [
             required: ["conversation_ids"],
         },
         handler: compareConversationThemesHandler,
+    },
+    {
+        name: "get_tool_usage_stats",
+        description:
+            "指定したセッションにおける各モデルのツール利用回数を取得します。",
+        parameters: {
+            type: "object",
+            properties: {
+                conversation_id: {
+                    type: "string",
+                    description: "ツール利用統計を見たいセッションID（例: 20250101-123000）",
+                },
+            },
+            required: ["conversation_id"],
+        },
+        handler: getToolUsageStatsHandler,
     },
     {
         name: "list_conversations",
@@ -1606,6 +1730,8 @@ const buildSystemInstruction = (name: string, additional?: string) => {
 - \`list_conversations\`: 過去セッションの一覧
 - \`get_conversation_summary\`: 特定セッションの要約取得
 - \`compare_conversation_themes\`: 複数セッションの共通テーマや相違点・新しい問いを整理
+- \`graph_rag_focus_node\`: 特定ノードを中心にした近傍議論を確認
+- \`get_tool_usage_stats\`: 指定セッションで各モデルがどのツールを何回使ったかを確認
 
 ### 5.2 個人ノート関連
 - \`get_personal_notes\`  
