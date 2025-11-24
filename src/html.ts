@@ -70,7 +70,7 @@ const renderToolStats = (stats: ToolStats, inline = false): string => {
         .sort();
 
     if (actors.length === 0) {
-        return inline ? '' : `<div class='tool-stats'><h2>ツール利用状況</h2><p>ツール利用は記録されていません。</p></div>`;
+        return '';
     }
 
     const items = actors.map(actor => {
