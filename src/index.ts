@@ -279,6 +279,7 @@ export type ToolName =
     | "ask_gemini"
     | "list_conversations"
     | "get_conversation_summary"
+    | "compare_conversation_themes"
     | "abort_process"
     | "sleep";
 
@@ -730,6 +731,27 @@ interface SleepToolResult {
     message: string;
 }
 
+interface CompareConversationThemesArgs {
+    conversation_ids: string[];
+}
+
+interface CompareConversationThemesResult {
+    success: boolean;
+    comparisons?: {
+        conversation_id: string;
+        title: string | null;
+        topics: string[];
+        japanese_summary: string;
+    }[];
+    analysis?: {
+        common_themes: string[];
+        divergences: string[];
+        emerging_questions: string[];
+    };
+    errors?: string[];
+    error?: string;
+}
+
 async function leaveNotesToDevs(modelSide: ModelSide, args: LeaveNotesToDevsArgs) {
     try {
         await fs.promises.writeFile(
@@ -877,6 +899,119 @@ interface GetConversationSummaryResult {
     conversation_id: string;
     summary: string | null;
     error?: string;
+}
+
+async function compareConversationThemesHandler(
+    _modelSide: ModelSide,
+    args: CompareConversationThemesArgs
+): Promise<CompareConversationThemesResult> {
+    const ids = Array.isArray(args?.conversation_ids)
+        ? args.conversation_ids.map(id => String(id).trim()).filter(Boolean)
+        : [];
+    if (ids.length < 2) {
+        return {
+            success: false,
+            error: 'conversation_ids は2件以上で指定してください。',
+        };
+    }
+
+    const comparisons: CompareConversationThemesResult['comparisons'] = [];
+    const errors: string[] = [];
+
+    for (const id of ids) {
+        const summary = await readSummaryFromLogFile(`${LOG_DIR}/${id}${LOG_FILE_SUFFIX}`);
+        if (!summary) {
+            errors.push(`セッション ${id} の要約を取得できませんでした。`);
+            continue;
+        }
+        comparisons.push({
+            conversation_id: id,
+            title: summary.title ?? null,
+            topics: summary.topics ?? [],
+            japanese_summary: summary.japanese_summary ?? '',
+        });
+    }
+
+    if (comparisons.length < 2) {
+        return {
+            success: false,
+            comparisons,
+            errors,
+            error: '比較に必要な要約が不足しています。',
+        };
+    }
+
+    try {
+        const response = await openaiClient.responses.create({
+            model: OPENAI_MODEL,
+            input: [
+                {
+                    role: "system",
+                    content: "あなたは哲学対話セッションのメタ分析を行うアシスタントです。複数のセッション要約を比較し、共通するテーマ、相違点、組み合わせから浮上する新しい問いを整理してください。回答は日本語で行ってください。",
+                },
+                {
+                    role: "user",
+                    content: JSON.stringify(comparisons, null, 2),
+                },
+            ],
+            max_output_tokens: STRUCTURED_OUTPUT_MAX_TOKENS,
+            text: {
+                format: {
+                    type: "json_schema",
+                    name: "conversation_theme_comparison",
+                    schema: {
+                        type: "object",
+                        properties: {
+                            common_themes: {
+                                type: "array",
+                                items: { type: "string" },
+                            },
+                            divergences: {
+                                type: "array",
+                                items: { type: "string" },
+                            },
+                            emerging_questions: {
+                                type: "array",
+                                items: { type: "string" },
+                            },
+                        },
+                        required: ["common_themes", "divergences", "emerging_questions"],
+                        additionalProperties: false,
+                    },
+                    strict: true,
+                },
+            },
+        } as OpenAI.Responses.ResponseCreateParamsNonStreaming);
+
+        const output = response.output_text;
+        let analysis: CompareConversationThemesResult['analysis'] = {
+            common_themes: [],
+            divergences: [],
+            emerging_questions: [],
+        };
+        if (typeof output === 'string') {
+            try {
+                analysis = JSON.parse(output);
+            } catch (parseErr) {
+                errors.push(`OpenAI出力の解析に失敗しました: ${String(parseErr)}`);
+            }
+        }
+
+        return {
+            success: true,
+            comparisons,
+            analysis,
+            errors: errors.length ? errors : undefined,
+        };
+    } catch (e) {
+        errors.push(`比較分析の生成に失敗しました: ${String(e)}`);
+        return {
+            success: false,
+            comparisons,
+            errors,
+            error: 'OpenAI での比較分析に失敗しました。',
+        };
+    }
 }
 
 const tools: ToolDefinition[] = [
@@ -1050,6 +1185,24 @@ const tools: ToolDefinition[] = [
             required: ["query"],
         },
         handler: graphRagQueryHandler,
+    },
+    {
+        name: "compare_conversation_themes",
+        description:
+            "複数の過去セッションの要約を比較し、共通点・相違点・新たに浮かぶ問いを整理します。",
+        parameters: {
+            type: "object",
+            properties: {
+                conversation_ids: {
+                    type: "array",
+                    items: { type: "string" },
+                    minItems: 2,
+                    description: "比較したいセッションIDの配列。",
+                },
+            },
+            required: ["conversation_ids"],
+        },
+        handler: compareConversationThemesHandler,
     },
     {
         name: "list_conversations",
@@ -1285,6 +1438,7 @@ const buildSystemInstruction = (name: string, additional?: string) => {
 - \`graph_rag_query\`: 過去の議論の文脈・トピック・知識を検索
 - \`list_conversations\`: 過去セッションの一覧
 - \`get_conversation_summary\`: 特定セッションの要約取得
+- \`compare_conversation_themes\`: 複数セッションの共通テーマや相違点・新しい問いを整理
 
 ### 5.2 個人ノート関連
 - \`get_personal_notes\`  
