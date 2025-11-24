@@ -30,6 +30,10 @@ footer {
     border-block-start: solid .25rem #888;
 }
 
+.summarized-title {
+    font-size: 150%;
+}
+
 .summary h2 {
     margin: 0;
     position: relative;
