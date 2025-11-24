@@ -521,7 +521,7 @@ interface GetMainSourceCodesArgs {}
 
 async function getMainSourceCodeHandler(modelSide: ModelSide, args: GetMainSourceCodesArgs) {
     try {
-        const codes = await fs.promises.readFile('./dist/index.ts', 'utf-8');
+        const codes = await fs.promises.readFile('./src/index.ts', 'utf-8');
         return { success: true, mainSourceCode: codes };
     } catch (e) {
         console.error(e);
