@@ -1830,7 +1830,11 @@ const openaiTurn = async () => {
             );
 
             if (!messageItem) {
-                throw new Error('Invalid output from OpenAI');
+                messages.push({
+                    name: 'openai',
+                    content: '',
+                });
+                break;
             }
 
             const outputMsg = findLastOpenAIMessageContent(messageItem.content);
