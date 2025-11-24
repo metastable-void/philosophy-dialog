@@ -1920,7 +1920,11 @@ const anthropicTurn = async () => {
                 (block): block is Anthropic.Messages.ContentBlock => block.type !== 'thinking'
             );
             if (assistantBlocks.length === 0) {
-                throw new Error('Anthropic response missing assistant output');
+                messages.push({
+                    name: 'anthropic',
+                    content: '',
+                });
+                break;
             }
 
             msgs.push({
