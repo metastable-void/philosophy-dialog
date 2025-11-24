@@ -63,6 +63,7 @@ const sanitizePositiveInt = (
 const SLEEP_BY_STEP = 1000;
 
 export interface ConversationSummary {
+    title?: string;
     topics: string[];
     japanese_summary: string;
     english_summary?: string | null;
@@ -212,6 +213,43 @@ fs.mkdirSync('./data', {
     recursive: true,
 });
 
+const LOG_DIR = './logs';
+const LOG_FILE_SUFFIX = '.log.jsonl';
+const MAX_HISTORY_RESULTS = 100;
+
+const parseSummaryFromLogContent = (content: string): ConversationSummary | null => {
+    const lines = content.split('\n');
+    for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        let entry: any;
+        try {
+            entry = JSON.parse(trimmed);
+        } catch (_err) {
+            continue;
+        }
+        if (entry?.name === 'POSTPROC_SUMMARY' && typeof entry.text === 'string') {
+            try {
+                return JSON.parse(entry.text) as ConversationSummary;
+            } catch (err) {
+                console.error('Failed to parse POSTPROC_SUMMARY payload', err);
+                return null;
+            }
+        }
+    }
+    return null;
+};
+
+const readSummaryFromLogFile = async (logPath: string): Promise<ConversationSummary | null> => {
+    try {
+        const content = await fs.promises.readFile(logPath, 'utf-8');
+        return parseSummaryFromLogContent(content);
+    } catch (err) {
+        console.error(`Failed to read log file ${logPath}`, err);
+        return null;
+    }
+};
+
 const getDate = () => {
     const d = new Date();
 
@@ -236,7 +274,9 @@ export type ToolName =
     | "set_additional_system_instructions"
     | "get_additional_system_instructions"
     | "get_main_source_codes"
-    | "ask_gemini";
+    | "ask_gemini"
+    | "list_conversations"
+    | "get_conversation_summary";
 
 export interface ToolDefinition<TArgs = any, TResult = any, TName = ToolName> {
     name: TName;
@@ -597,6 +637,119 @@ async function leaveNotesToDevs(modelSide: ModelSide, args: LeaveNotesToDevsArgs
     }
 }
 
+async function listConversationsHandler(
+    _modelSide: ModelSide,
+    _args: ListConversationsArgs
+): Promise<ListConversationsResult> {
+    try {
+        const entries = await fs.promises.readdir(LOG_DIR, { withFileTypes: true });
+        const files = entries
+            .filter(entry => entry.isFile() && entry.name.endsWith(LOG_FILE_SUFFIX))
+            .map(entry => entry.name)
+            .sort();
+
+        if (files.length === 0) {
+            return {
+                success: true,
+                conversations: [],
+            };
+        }
+
+        const selectedFiles = files.slice(-MAX_HISTORY_RESULTS).reverse();
+        const conversations: ListConversationsResult['conversations'] = [];
+
+        for (const fileName of selectedFiles) {
+            const conversationId = fileName.slice(0, -LOG_FILE_SUFFIX.length);
+            const summary = await readSummaryFromLogFile(`${LOG_DIR}/${fileName}`);
+            conversations.push({
+                id: conversationId,
+                title: summary?.title ?? null,
+            });
+        }
+
+        return {
+            success: true,
+            conversations,
+        };
+    } catch (e) {
+        console.error(e);
+        return {
+            success: false,
+            conversations: [],
+            error: String(e),
+        };
+    }
+}
+
+async function getConversationSummaryHandler(
+    _modelSide: ModelSide,
+    args: GetConversationSummaryArgs
+): Promise<GetConversationSummaryResult> {
+    const conversationId = (args?.conversation_id ?? '').trim();
+    if (!conversationId) {
+        return {
+            success: false,
+            conversation_id: '',
+            summary: null,
+            error: 'conversation_id is required',
+        };
+    }
+
+    const logPath = `${LOG_DIR}/${conversationId}${LOG_FILE_SUFFIX}`;
+    const summaryData = await readSummaryFromLogFile(logPath);
+
+    if (!summaryData) {
+        const exists = await fs.promises.access(logPath).then(() => true).catch(() => false);
+        return {
+            success: false,
+            conversation_id: conversationId,
+            summary: null,
+            error: exists ? 'Summary not found in log' : 'Conversation log not found',
+        };
+    }
+
+    const japaneseSummary = typeof summaryData.japanese_summary === 'string'
+        ? summaryData.japanese_summary
+        : null;
+
+    if (!japaneseSummary) {
+        return {
+            success: false,
+            conversation_id: conversationId,
+            summary: null,
+            error: 'japanese_summary missing in log',
+        };
+    }
+
+    return {
+        success: true,
+        conversation_id: conversationId,
+        summary: japaneseSummary,
+    };
+}
+
+interface ListConversationsArgs {}
+
+interface ListConversationsResult {
+    success: boolean;
+    conversations: {
+        id: string;
+        title: string | null;
+    }[];
+    error?: string;
+}
+
+interface GetConversationSummaryArgs {
+    conversation_id: string;
+}
+
+interface GetConversationSummaryResult {
+    success: boolean;
+    conversation_id: string;
+    summary: string | null;
+    error?: string;
+}
+
 const tools: ToolDefinition[] = [
     {
         name: "terminate_dialog",
@@ -756,6 +909,33 @@ const tools: ToolDefinition[] = [
         },
         handler: graphRagQueryHandler,
     },
+    {
+        name: "list_conversations",
+        description:
+            "最新の対話ログ（最大100件）を取得し、それぞれのIDとタイトルを一覧します。",
+        parameters: {
+            type: "object",
+            properties: {},
+            required: [],
+        },
+        handler: listConversationsHandler,
+    },
+    {
+        name: "get_conversation_summary",
+        description:
+            "指定した対話IDの POSTPROC_SUMMARY に含まれる日本語要約を取得します。",
+        parameters: {
+            type: "object",
+            properties: {
+                conversation_id: {
+                    type: "string",
+                    description: "取得したい対話ログのID（例: 20250101-123000）",
+                },
+            },
+            required: ["conversation_id"],
+        },
+        handler: getConversationSummaryHandler,
+    },
 ];
 
 function toOpenAITools(
@@ -880,6 +1060,8 @@ const buildSystemInstruction = (name: string, additional?: string) => {
 またあなたがたの過去の会話は GraphRAG に記録されています。
 
 \`graph_rag_query\` ツールで積極的に過去の文脈を検索し、今回の議論の参考としてください。
+
+\`list_conversations\`、\`get_conversation_summary\`のツールを使うと過去の対話の履歴の一覧を取得したり、特定の対話の概要を取得したりすることができます。
 
 このAI哲学対話システムを開発した哲学・IT研究者に意見を述べたり、指摘したいことがあるときには積極的に \`leave_notes_to_devs\` ツールを使ってください。このツールは何度でも使えます。残されたメモは人間であるAI・哲学の研究者が参考にします。
 
