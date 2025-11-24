@@ -23,6 +23,17 @@ pre, code {
     font-family: "Inconsolata", monospace;
 }
 
+table {
+    border-spacing: 0;
+    border-collapse: collapse;
+}
+
+table :is(td, th) {
+    border-block-end: solid .125rem #888;
+    padding-block: .5em;
+    padding-inline: 1em;
+}
+
 footer {
     margin-block-start: 3rem;
     text-align: end;
