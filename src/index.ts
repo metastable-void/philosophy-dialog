@@ -1715,7 +1715,8 @@ const anthropicTurn = async () => {
                 },
             });
 
-            const thinkingBlocks = msg.content.filter(
+            const contentBlocks = msg.content;
+            const thinkingBlocks = contentBlocks.filter(
                 (block): block is Anthropic.Messages.ThinkingBlock => block.type === 'thinking'
             );
             for (const block of thinkingBlocks) {
@@ -1735,7 +1736,7 @@ const anthropicTurn = async () => {
                 hushFinish = true;
             }
 
-            const assistantBlocks = msg.content.filter(
+            const assistantBlocks = contentBlocks.filter(
                 (block): block is Anthropic.Messages.ContentBlock => block.type !== 'thinking'
             );
             if (assistantBlocks.length === 0) {
@@ -1744,7 +1745,7 @@ const anthropicTurn = async () => {
 
             msgs.push({
                 role: 'assistant',
-                content: assistantBlocks,
+                content: contentBlocks,
             });
 
             const toolUses = assistantBlocks.filter(
