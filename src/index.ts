@@ -1693,115 +1693,12 @@ const anthropicTurn = async () => {
         }
     });
     try {
-        const msg = await anthropicClient.messages.create({
-            model: ANTHROPIC_MODEL,
-            max_tokens: 8192,
-            temperature: 1.0,
-            system: buildSystemInstruction(
-                ANTHROPIC_NAME,
-                hushFinish
-                    ? TOKEN_LIMIT_ADD_PROMPT
-                    : DEFAULT_ADD_PROMPT
-            ),
-            messages: msgs,
-            tool_choice: { type: 'auto' },
-            tools: getAnthropicToolsWithSearch(),
-            thinking: {
-                type: 'enabled',
-                budget_tokens: 1024,
-            },
-        });
+        let extraInstruction = hushFinish
+            ? TOKEN_LIMIT_ADD_PROMPT
+            : DEFAULT_ADD_PROMPT;
 
-        const thinkingBlocks = msg.content.filter(
-            (block): block is Anthropic.Messages.ThinkingBlock => block.type === 'thinking'
-        );
-
-        for (const block of thinkingBlocks) {
-            // `block.thinking` is the human-readable reasoning text (or redacted version)
-            log(
-                `${ANTHROPIC_NAME} (thinking)`,
-                block.thinking
-            );
-        }
-
-        if (msg?.usage) {
-            const tokens = msg.usage.input_tokens + msg.usage.output_tokens;
-            anthropicTokens = tokens;
-            if (tokens > CLAUDE_HAIKU_4_5_MAX * 0.8) {
-                hushFinish = true;
-            }
-        } else {
-            hushFinish = true;
-        }
-
-        const selectContentBlock = <T extends Anthropic.Messages.ContentBlock>(
-            predicate: (block: Anthropic.Messages.ContentBlock) => block is T,
-        ): T | undefined => {
-            for (let i = msg.content.length - 1; i >= 0; i -= 1) {
-                const block = msg.content[i];
-                if (!block) continue;
-                if (predicate(block)) {
-                    return block;
-                }
-            }
-            return undefined;
-        };
-
-        const latestTextBlock = selectContentBlock(
-            (block): block is Anthropic.Messages.TextBlock => block.type === 'text',
-        );
-        const latestToolUseBlock = selectContentBlock(
-            (block): block is Anthropic.Messages.ToolUseBlock => block.type === 'tool_use',
-        );
-
-        let outputBlock: Anthropic.Messages.ContentBlock | undefined =
-            latestTextBlock ?? latestToolUseBlock;
-
-        if (!outputBlock) {
-            throw new Error('Anthropic response missing assistant output');
-        }
-
-        msgs.push({
-            role: 'assistant',
-            content: [outputBlock],
-        });
-
-        if (outputBlock.type === 'tool_use') {
-            const toolResultsBlocks: Anthropic.Messages.ToolResultBlockParam[] = [];
-            const use = outputBlock;
-            const tool = findTool(use.name);
-            logToolEvent(
-                ANTHROPIC_NAME,
-                'call',
-                { tool: use.name, args: use.input },
-            );
-            const result = await tool.handler('anthropic', use.input);
-            logToolEvent(
-                ANTHROPIC_NAME,
-                'result',
-                { tool: use.name, result },
-            );
-            toolResultsBlocks.push({
-                type: "tool_result",
-                tool_use_id: use.id,
-                content: [{ type: "text", text: JSON.stringify(result) }],
-            });
-
-            msgs.push({
-                role: 'user',
-                content: toolResultsBlocks,
-            });
-
-            const extraInstruction =
-                tool.name === "terminate_dialog"
-                    ? TERMINATE_ADD_PROMPT
-                    : (
-                        hushFinish
-                        ? '司会より：あなたがたのコンテキスト長が限界に近付いています。今までの議論を短くまとめ、お別れの挨拶をしてください。'
-                        : DEFAULT_ADD_PROMPT
-                    );
-
-            const followup = await anthropicClient.messages.create({
+        while (true) {
+            const msg = await anthropicClient.messages.create({
                 model: ANTHROPIC_MODEL,
                 max_tokens: 8192,
                 temperature: 1.0,
@@ -1812,32 +1709,93 @@ const anthropicTurn = async () => {
                 messages: msgs,
                 tool_choice: { type: 'auto' },
                 tools: getAnthropicToolsWithSearch(),
+                thinking: {
+                    type: 'enabled',
+                    budget_tokens: 1024,
+                },
             });
 
-            const followupText = (() => {
-                for (let i = followup.content.length - 1; i >= 0; i -= 1) {
-                    const block = followup.content[i];
-                    if (!block) continue;
-                    if (block.type === 'text') {
-                        return block;
-                    }
-                }
-                return undefined;
-            })();
-
-            if (!followupText) {
-                throw new Error('Non-text output from Anthropic');
+            const thinkingBlocks = msg.content.filter(
+                (block): block is Anthropic.Messages.ThinkingBlock => block.type === 'thinking'
+            );
+            for (const block of thinkingBlocks) {
+                log(
+                    `${ANTHROPIC_NAME} (thinking)`,
+                    block.thinking
+                );
             }
 
-            outputBlock = followupText;
+            if (msg?.usage) {
+                const tokens = msg.usage.input_tokens + msg.usage.output_tokens;
+                anthropicTokens = tokens;
+                if (tokens > CLAUDE_HAIKU_4_5_MAX * 0.8) {
+                    hushFinish = true;
+                }
+            } else {
+                hushFinish = true;
+            }
+
+            const assistantBlocks = msg.content.filter(
+                (block): block is Anthropic.Messages.ContentBlock => block.type !== 'thinking'
+            );
+            if (assistantBlocks.length === 0) {
+                throw new Error('Anthropic response missing assistant output');
+            }
+
+            msgs.push({
+                role: 'assistant',
+                content: assistantBlocks,
+            });
+
+            const toolUse = assistantBlocks.find(
+                (block): block is Anthropic.Messages.ToolUseBlock => block.type === 'tool_use'
+            );
+
+            if (!toolUse) {
+                const latestText = [...assistantBlocks].reverse().find(
+                    (block): block is Anthropic.Messages.TextBlock => block.type === 'text'
+                );
+                if (!latestText) {
+                    throw new Error('Non-text output from Anthropic');
+                }
+                messages.push({
+                    name: 'anthropic',
+                    content: latestText.text,
+                });
+                break;
+            }
+
+            const tool = findTool(toolUse.name);
+            logToolEvent(
+                ANTHROPIC_NAME,
+                'call',
+                { tool: toolUse.name, args: toolUse.input },
+            );
+            const result = await tool.handler('anthropic', toolUse.input);
+            logToolEvent(
+                ANTHROPIC_NAME,
+                'result',
+                { tool: toolUse.name, result },
+            );
+
+            msgs.push({
+                role: 'user',
+                content: [{
+                    type: "tool_result",
+                    tool_use_id: toolUse.id,
+                    content: [{ type: "text", text: JSON.stringify(result) }],
+                }],
+            });
+
+            extraInstruction =
+                toolUse.name === "terminate_dialog"
+                    ? TERMINATE_ADD_PROMPT
+                    : (
+                        hushFinish
+                            ? '司会より：あなたがたのコンテキスト長が限界に近付いています。今までの議論を短くまとめ、お別れの挨拶をしてください。'
+                            : DEFAULT_ADD_PROMPT
+                    );
         }
-        if (outputBlock.type !== 'text') {
-            throw new Error('Non-text output from Anthropic');
-        }
-        messages.push({
-            name: 'anthropic',
-            content: outputBlock.text,
-        });
     } catch (e) {
         anthropicFailureCount += 1;
         console.error(e);
