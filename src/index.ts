@@ -829,6 +829,8 @@ const buildSystemInstruction = (name: string, additional?: string) => {
 このシステムは人間が書いた有機的なコードであり、バグはつきものである点、ご了承ください。
 実装について不明瞭な点があったらソースコードをツール呼び出しで読んでください。
 
+**開発・研究責任者**： [真空 (Yuka MORI)](https://github.com/metastable-void)
+
 ## 話題の例
 - 現代の科学やAIが発展している中での形而上学について
 - 心の哲学について
