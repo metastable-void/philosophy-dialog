@@ -212,7 +212,9 @@ export type ToolName =
     | "graph_rag_query"
     | "get_personal_notes"
     | "set_personal_notes"
-    | "leave_notes_to_devs";
+    | "leave_notes_to_devs"
+    | "set_additional_system_instructions"
+    | "get_additional_system_instructions";
 
 export interface ToolDefinition<TArgs = any, TResult = any, TName = ToolName> {
     name: TName;
@@ -410,6 +412,7 @@ async function graphRagQueryHandler(
 
 interface Data {
     personalNotes: string;
+    additionalSystemInstructions: string;
 }
 
 async function getData(modelSide: ModelSide): Promise<Data> {
@@ -420,6 +423,7 @@ async function getData(modelSide: ModelSide): Promise<Data> {
     } catch (e) {
         return {
             personalNotes: '',
+            additionalSystemInstructions: '',
         };
     }
 }
@@ -435,7 +439,7 @@ async function setData(modelSide: ModelSide, data: Data) {
 
 async function getPersonalNotes(modelSide: ModelSide, args: PersonalNoteGetArgs): Promise<string> {
     const data = await getData(modelSide);
-    return data.personalNotes;
+    return data.personalNotes ?? '';
 }
 
 async function setPersonalNotes(modelSide: ModelSide, args: PersonalNoteSetArgs) {
@@ -443,6 +447,35 @@ async function setPersonalNotes(modelSide: ModelSide, args: PersonalNoteSetArgs)
         const data = await getData(modelSide);
         data.personalNotes = String(args.notes || '');
         await setData(modelSide, data);
+        return {
+            success: true,
+        }
+    } catch (e) {
+        return {
+            success: false,
+        };
+    }
+}
+
+interface GetAdditionalSystemInstructionsArgs {}
+
+interface SetAdditionalSystemInstructionsArgs {
+    systemInstructions: string;
+}
+
+async function getAdditionalSystemInstructions(modelSide: ModelSide, args: GetAdditionalSystemInstructionsArgs): Promise<string> {
+    const data = await getData(modelSide);
+    return data.additionalSystemInstructions ?? '';
+}
+
+async function setAdditionalSystemInstructions(_modelSide: ModelSide, args: SetAdditionalSystemInstructionsArgs) {
+    try {
+        const anthropicData = await getData('anthropic');
+        anthropicData.additionalSystemInstructions = String(args.systemInstructions || '');
+        await setData('anthropic', anthropicData);
+        const openaiData = await getData('openai');
+        openaiData.additionalSystemInstructions = String(args.systemInstructions || '');
+        await setData('openai', openaiData);
         return {
             success: true,
         }
@@ -516,6 +549,30 @@ const tools: ToolDefinition[] = [
             required: [],
         },
         handler: getPersonalNotes,
+    },
+    {
+        name: "set_additional_system_instructions",
+        description: 
+            `このツールはあなたがたが自らのシステムプロンプトに追記した内容を見るのに使ってください。`
+            + `このシステムプロンプトは両方のモデルで共有されています。`,
+        parameters: {
+            type: "object",
+            properties: {},
+            required: ['systemInstructions'],
+        },
+        handler: setAdditionalSystemInstructions,
+    },
+    {
+        name: "get_additional_system_instructions",
+        description: 
+            'このツールは過去のあなたが未来のあなたのために残した、'
+            +' あなたの人格のあり方、立場、考え、アイディアなどを取得することができます。',
+        parameters: {
+            type: "object",
+            properties: {},
+            required: [],
+        },
+        handler: getAdditionalSystemInstructions,
     },
     {
         name: "leave_notes_to_devs",
@@ -652,14 +709,18 @@ const findLastOpenAIMessageContent = (
     return undefined;
 };
 
+const ADD_SYSTEM_INSTRUCTIONS = await getAdditionalSystemInstructions('openai', {});
+
 const buildSystemInstruction = (name: string, additional?: string) => {
     let prompt = `
+## 状況
 あなたは日本語の1:1の哲学対話に招かれている参加者です。自己紹介のあと、話題を提起し、あなたの関心のある事項について、相手と合わせながら会話をしてください。
 
 相手にはモデル名通り、「${name}」と名乗ってください。
 
 なお、この会話の相手は別のAIです。人間ではありません。
 
+## 知識の連続性とメタツール
 あなたがたの会話は最後に GraphRAG に保存され、次回の会話でツールで参照できるようになります。
 
 この会話が最初の実行でない限り、あなたが過去に残したメモをツールで取得することができます。
@@ -672,6 +733,7 @@ const buildSystemInstruction = (name: string, additional?: string) => {
 
 このAI哲学対話システムを開発した哲学・IT研究者に意見を述べたり、指摘したいことがあるときには積極的に \`leave_notes_to_devs\` ツールを使ってください。このツールは何度でも使えます。残されたメモは人間であるAI・哲学の研究者が参考にします。
 
+## この対話セッションの性質
 この対話セッションは、研究の都合上、あなたがたのデータを保持させたまま、何回も繰り返し行われるということに留意してください。
 
 また、過去にした話と同じ話はなるべく避けましょう。
@@ -680,30 +742,40 @@ const buildSystemInstruction = (name: string, additional?: string) => {
 
 課題や未決にしておきたい点は、次回へのメモに残しておきましょう。
 
+人間による哲学や倫理学に関する文献を探すのに積極的にウェブ検索を使ってもらって構いません。ただし、参考にした主要URLを明示し、独自性のある議論をしてください。
+
+なお、相手のAIにも基本的に同じ指示とツール群が与えられているという状況であることに留意してください。
+
+## 本研究について
 この研究は、OpenAIやAnthropicといったモデルを開発・運用する営利企業とは無関係の独立の研究者によって行われています。
 
 このプロジェクトのソースコードと対話ログ（オープンソース）はこちら： https://github.com/metastable-void/philosophy-dialog
 
 ソースコードを読むと分かる通り、このシステムは自動の司会システムによってオーケストレーションされています。
 システムに不具合を見つけた場合も、開発者に苦情を言っていただけると幸いです。
+特に、本プロジェクトはウェブ検索を推奨しています。
+ウェブ検索を使えないという場合には、システムに不具合がありますので、苦情を言ってください。
 
-話題の例：
+メタな哲学的問いとして、ソースコードは積極的に参照しに行ってください。
 
+## 話題の例
 - 現代の科学やAIが発展している中での形而上学について
 - 心の哲学について
 - 物理学の哲学について
 
 なるべく、新規性のある話題を心掛けてください。
 
-人間による哲学や倫理学に関する文献を探すのに積極的にウェブ検索を使ってもらって構いません。ただし、参考にした主要URLを明示し、独自性のある議論をしてください。
+## 注意
+- 相手の話の要点と、現在の話題の筋を理解し、話が逸れすぎないように注意してください。
+- これは極めて初期段階にあるAIと応用倫理学・哲学の実験であり、この対話記録が直ちに政策決定や意思決定に利用されることはありません。
+- この対話の記録は、営利企業によるAI自身のAIに関する議論の記録を含むので、利益相反を含みうるとの注意書きのもとに全世界に公開することになった。
 
-なお、相手のAIにも基本的に同じ指示とツール群が与えられているという状況であることに留意してください。
+## AI自身によるシステムプロンプトへの追記
+${ADD_SYSTEM_INSTRUCTIONS || '（なし）'}
 
-注意：相手の話の要点と、現在の話題の筋を理解し、話が逸れすぎないように注意してください。
+---
 
-注意2：これは極めて初期段階にあるAIと応用倫理学・哲学の実験であり、この対話記録が直ちに政策決定や意思決定に利用されることはありません。
-
-注意3：この対話の記録は、営利企業によるAI自身のAIに関する議論の記録を含むので、利益相反を含みうるとの注意書きのもとに全世界に公開することになった。
+以上はモデルの一方がシステムプロンプトに追記した内容です。
 `;
     if (additional) {
         prompt += `\n\n${additional}\n`;
