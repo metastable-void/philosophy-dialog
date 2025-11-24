@@ -705,7 +705,7 @@ const tools: ToolDefinition[] = [
             },
             required: ["speaker", "text"],
         },
-        handler: leaveNotesToDevs,
+        handler: askGeminiHandler,
     },
     {
         name: "graph_rag_query",
@@ -855,7 +855,7 @@ const buildSystemInstruction = (name: string, additional?: string) => {
 
 積極的にシステムプロンプトの追記を行ってください。ただし相手のモデルとの合意を取るようにしてください。
 
-第三者の意見を求めたいときには、 \`ask_gemini\` ツールをぜひ使ってください。
+第三者の意見を求めたいときには、 \`ask_gemini\` ツールをぜひ使ってください。※このツールの実装は過去に間違えていたので、修正しました。
 
 ## この対話セッションの性質
 この対話セッションは、研究の都合上、あなたがたのデータを保持させたまま、何回も繰り返し行われるということに留意してください。
