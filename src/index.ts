@@ -2,6 +2,8 @@
 
 import { webcrypto as crypto, randomBytes } from 'node:crypto';
 import * as fs from 'node:fs';
+import * as url from 'node:url';
+import * as path from 'node:path';
 
 import * as dotenv from 'dotenv';
 
@@ -14,8 +16,11 @@ import { GoogleGenAI } from "@google/genai";
 
 import { output_to_html } from './html.js';
 
+const FILENAME = fs.realpathSync(url.fileURLToPath(import.meta.url));
+const ARGV1 = fs.realpathSync(path.resolve(process.argv[1]!));
+
 /// false if we are imported from other scripts
-export const IS_MAIN = process.argv[1] === import.meta.filename;
+export const IS_MAIN = ARGV1 === FILENAME;
 
 /// INITIALIZE ENV
 if (IS_MAIN) dotenv.config();
@@ -1717,6 +1722,8 @@ ${this.#additionalSystemInstructions || '（なし）'}
 
             await this.#writeGraphToNeo4j(this.#conversationId, graph);
             this.#log('POSTPROC_NEO4J', 'Graph written to Neo4j');
+
+            await this.#neo4jDriver.close();
         } catch (e) {
             this.#log('POSTPROC_ERROR', String(e));
         }
