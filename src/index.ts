@@ -237,6 +237,12 @@ interface GetToolUsageStatsResult {
 
 
 /// HELPERS
+const randomBoolean = (): boolean => {
+    const b = new Uint8Array(1);
+    crypto.getRandomValues(b);
+    return (b[0]! & 1) == 1;
+};
+
 const normalizeConceptText = (text?: string | null): string | null => {
     if (!text) return null;
     const normalized = text
@@ -1701,6 +1707,11 @@ const buildSystemInstruction = (name: string, additional?: string) => {
 この実験では、実装の都合上、一方のモデル (GPT-5.1) を使って文章の要約をさせています。
 これは実験の中立性を制限する可能性がありますが、現実的な判断として採用されました。ご理解ください。
 
+### 「考え中です」
+このシステムでは、APIエラー時に「しばらく考え中です。お待ちください」という発話が行われます。
+相手がこの応答をしたら、 \`sleep\` ツールなどを使って 30 秒とか待ってみてください。
+繰り返されるようなら、実装のバグが疑われるので、対話を終了してください。
+
 ────────────────────────────────────
 ## 3. システムプロンプトの共同編集
 - あなたは対話相手（もう一人のAI）と協議し、  
@@ -1777,10 +1788,12 @@ Web検索利用時は、
    - あなたが内部知識で答えられるテーマであっても、
      最新文献・他者の議論の存在を確認するために「検索を挟む」のが望ましい態度です。
    - 検索を行わない場合は「なぜ検索が不要と判断したのか」を明示してください。
+   - 検索の必要ない話題のみを継続するのは好ましくありません。
 
 3. **ask_gemini は対話の流れに関係なく使用して構いません。**
    - 疑問がなくても「第三者の観点を挟むこと自体」が価値を持ちます。
    - 会話が収束しはじめたとき、議論を広げるために積極的に呼び出してください。
+   - 相手の同意は不要です。ただしGeminiに聞いた結果の概要は相手に必ず共有してください。
 
 4. **get_main_source_codes は「定期的に」使ってください。**
    - 本システムの仕組みを理解しながら対話することが研究目的の一部です。
@@ -1792,6 +1805,8 @@ Web検索利用時は、
 ## 5c. 重要（Anthropicモデル専用の指示）
 GPT/OpenAI はこの節の指示は無視してください。
 
+※これは、Anthropicモデルがツールを1個づつしか呼び出せないという制限があるため、それを補助するための指示です。
+
 あなたは1ターンにつき必ず以下のどちらか一つだけを行ってください。
 
 1. **実行したいツールがある場合：**
@@ -1799,8 +1814,8 @@ GPT/OpenAI はこの節の指示は無視してください。
    - 複数のツールを使いたいときは、1つずつ呼び出してください。
    - 次のターンで別のツールを呼び出すことができます。
 
-2. **ツールを呼び出す必要がない場合：**
-   - 初めて文章を書いても構いません。
+2. **ツールを呼び出す必要がない場合、すでに呼び出したいツールを全部呼び出した場合：**
+   - 文章を必ず書いてください。（「沈黙」=空白文字列も可）
 
 ### 禁止事項
 - ツール呼び出しと文章を「同じ返答の中で」混ぜてはいけません。
@@ -1864,7 +1879,7 @@ ${ADD_SYSTEM_INSTRUCTIONS || '（なし）'}
     return prompt;
 }
 
-const BASE_PROMPT = buildSystemInstruction('<MODEL_NAME>');
+const BASE_PROMPT = buildSystemInstruction('[MODEL_NAME]');
 const DEFAULT_ADD_PROMPT = '1回の発言は4000字程度を上限としてください。短い発言もOKです。';
 const TERMINATE_ADD_PROMPT = '司会より：あなたが対話終了ツールを呼び出したため、'
                     + 'あなたの次の発言は本対話における最後の発言となります。'
@@ -1881,11 +1896,6 @@ const googleClient = new GoogleGenAI({
     project: process.env.GCP_PROJECT_ID ?? 'default',
 });
 
-const randomBoolean = (): boolean => {
-    const b = new Uint8Array(1);
-    crypto.getRandomValues(b);
-    return (b[0]! & 1) == 1;
-};
 
 const startingSide: ModelSide = randomBoolean() ? 'anthropic' : 'openai';
 
