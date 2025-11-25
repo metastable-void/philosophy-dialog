@@ -555,6 +555,7 @@ export class PhilosophyDialog {
     // API usage
     #openaiApiTokenUsage = 0;
     #anthropicApiTokenUsage = 0;
+    #googleApiTokenUsage = 0;
 
     #openaiFailureCount = 0;
     #anthropicFailureCount = 0;
@@ -804,6 +805,74 @@ export class PhilosophyDialog {
 
     #getAnthropicToolsWithSearch() {
         return [...this.#anthropicTools, ANTHROPIC_WEB_SEARCH_TOOL];
+    }
+
+    #recordOpenAIApiUsage(usage: {
+        total_tokens?: number | null;
+        input_tokens?: number | null;
+        output_tokens?: number | null;
+    } | null | undefined) {
+        if (!usage) return;
+        const coerce = (value?: number | null) => (
+            typeof value === 'number' && Number.isFinite(value) ? value : 0
+        );
+        const totalTokensCandidate = usage.total_tokens;
+        const totalTokens = typeof totalTokensCandidate === 'number' && Number.isFinite(totalTokensCandidate)
+            ? totalTokensCandidate
+            : (coerce(usage.input_tokens) + coerce(usage.output_tokens));
+        if (Number.isFinite(totalTokens) && totalTokens > 0) {
+            this.#openaiApiTokenUsage += totalTokens;
+        }
+    }
+
+    #recordAnthropicApiUsage(usage: {
+        total_tokens?: number | null;
+        input_tokens?: number | null;
+        output_tokens?: number | null;
+        cache_creation_input_tokens?: number | null;
+        cache_read_input_tokens?: number | null;
+    } | null | undefined) {
+        if (!usage) return;
+        const coerce = (value?: number | null) => (
+            typeof value === 'number' && Number.isFinite(value) ? value : 0
+        );
+        const totalTokensCandidate = usage.total_tokens;
+        const totalTokens = typeof totalTokensCandidate === 'number' && Number.isFinite(totalTokensCandidate)
+            ? totalTokensCandidate
+            : (
+                coerce(usage.input_tokens)
+                + coerce(usage.output_tokens)
+                + coerce(usage.cache_creation_input_tokens)
+                + coerce(usage.cache_read_input_tokens)
+            );
+        if (Number.isFinite(totalTokens) && totalTokens > 0) {
+            this.#anthropicApiTokenUsage += totalTokens;
+        }
+    }
+
+    #recordGoogleApiUsage(usage?: {
+        totalTokenCount?: number | null;
+        promptTokenCount?: number | null;
+        candidatesTokenCount?: number | null;
+        toolUsePromptTokenCount?: number | null;
+        thoughtsTokenCount?: number | null;
+    } | null) {
+        if (!usage) return;
+        const coerce = (value?: number | null) => (
+            typeof value === 'number' && Number.isFinite(value) ? value : 0
+        );
+        const totalTokensCandidate = usage.totalTokenCount;
+        const totalTokens = typeof totalTokensCandidate === 'number' && Number.isFinite(totalTokensCandidate)
+            ? totalTokensCandidate
+            : (
+                coerce(usage.promptTokenCount)
+                + coerce(usage.candidatesTokenCount)
+                + coerce(usage.toolUsePromptTokenCount)
+                + coerce(usage.thoughtsTokenCount)
+            );
+        if (Number.isFinite(totalTokens) && totalTokens > 0) {
+            this.#googleApiTokenUsage += totalTokens;
+        }
     }
 
     #buildTools(): ToolDefinition[] {
@@ -1386,6 +1455,7 @@ ${this.#additionalSystemInstructions || '（なし）'}
                 },
             },
         } as OpenAI.Responses.ResponseCreateParamsNonStreaming);
+        this.#recordOpenAIApiUsage(response.usage);
 
         if (response.incomplete_details) {
             throw new Error(
@@ -1484,6 +1554,7 @@ ${this.#additionalSystemInstructions || '（なし）'}
                 },
             },
         } as OpenAI.Responses.ResponseCreateParamsNonStreaming);
+        this.#recordOpenAIApiUsage(response.usage);
 
         if (response.incomplete_details) {
             throw new Error(
@@ -1537,6 +1608,7 @@ ${this.#additionalSystemInstructions || '（なし）'}
                 tool_choice: 'auto',
                 tools: this.#getOpenAIToolsWithSearch(),
             });
+            this.#recordOpenAIApiUsage(currentOutput.usage);
             if (this.#shouldExit) return;
 
             if (currentOutput.usage?.total_tokens) {
@@ -1610,6 +1682,7 @@ ${this.#additionalSystemInstructions || '（なし）'}
                         tool_choice: 'auto',
                         tools: this.#getOpenAIToolsWithSearch(),
                     });
+                    this.#recordOpenAIApiUsage(currentOutput.usage);
                     if (this.#shouldExit) return;
 
                     if (currentOutput.usage?.total_tokens) {
@@ -1666,6 +1739,7 @@ ${this.#additionalSystemInstructions || '（なし）'}
                     tools: this.#getAnthropicToolsWithSearch(),
                     thinking: { type: 'enabled', budget_tokens: 1024 },
                 });
+                this.#recordAnthropicApiUsage(msg.usage);
                 if (this.#shouldExit) return;
 
                 const contentBlocks = msg.content;
@@ -1787,6 +1861,7 @@ ${this.#additionalSystemInstructions || '（なし）'}
             anthropic_tokens: this.#anthropicTokens,
             openai_api_token_usage: this.#openaiApiTokenUsage,
             anthropic_api_token_usage: this.#anthropicApiTokenUsage,
+            google_api_token_usage: this.#googleApiTokenUsage,
             openai_failures: this.#openaiFailureCount,
             anthropic_failures: this.#anthropicFailureCount,
             starting_side: this.#startingSide,
@@ -1977,6 +2052,7 @@ ${this.#additionalSystemInstructions || '（なし）'}
                     ],
                     max_output_tokens: STRUCTURED_OUTPUT_MAX_TOKENS,
                 });
+                this.#recordOpenAIApiUsage(response.usage);
 
                 if (!response.output_text) {
                     throw new Error('Output text is undefined');
@@ -2110,6 +2186,7 @@ ${this.#additionalSystemInstructions || '（なし）'}
                     ],
                     max_output_tokens: STRUCTURED_OUTPUT_MAX_TOKENS,
                 });
+                this.#recordOpenAIApiUsage(response.usage);
 
                 if (response.output_text && response.output_text.trim().length > 0) {
                     return { context: response.output_text };
@@ -2218,6 +2295,7 @@ ${this.#additionalSystemInstructions || '（なし）'}
                     + `文脈を理解し、日本語で応答を行ってください：\n\n`
                     + args.text,
             });
+            this.#recordGoogleApiUsage(response?.usageMetadata);
             if (typeof response?.text !== 'string') {
                 throw new Error('Non-text response from gemini');
             }
@@ -2433,6 +2511,7 @@ ${this.#additionalSystemInstructions || '（なし）'}
                     },
                 },
             } as OpenAI.Responses.ResponseCreateParamsNonStreaming);
+            this.#recordOpenAIApiUsage(response.usage);
 
             const output = response.output_text;
             let analysis: CompareConversationThemesResult['analysis'] = {
