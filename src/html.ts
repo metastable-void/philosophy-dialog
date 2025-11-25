@@ -296,7 +296,7 @@ export class HtmlBuilder {
             }
 
             if (!perConvStats) {
-                const logPath = path.join(this.#logsDir, `${conversationName}.log.jsonl`);
+                const logPath = path.join(this.#logsDir, `${conversationName}.jsonl`);
                 if (!fs.existsSync(logPath)) continue;
                 try {
                     const logLines = fs.readFileSync(logPath, 'utf-8')

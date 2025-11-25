@@ -616,17 +616,40 @@ export class PhilosophyDialog {
     }
 
     async run() {
-        while (!this.#shouldExit) {
-            if (this.#started || this.#startingSide === 'anthropic') {
+        try {
+            while (!this.#shouldExit) {
+                if (this.#started || this.#startingSide === 'anthropic') {
+                    this.#started = true;
+                    await this.#openaiTurn();
+                    if (this.#shouldExit) {
+                        return;
+                    }
+                    if (this.#hushFinish) {
+                        this.#finishTurnCount += 1;
+                    }
+                    this.#log(this.#openaiName, this.#messages[this.#messages.length - 1]!.content);
+                    if (this.#shouldFinish()) {
+                        await this.#finish();
+                        return;
+                    }
+                    if (this.#shouldExit) {
+                        return;
+                    }
+                    await sleep(SLEEP_BY_STEP);
+                    if (this.#shouldExit) {
+                        return;
+                    }
+                    if (this.#hushFinish) {
+                        this.#finishTurnCount += 1;
+                    }
+                }
+
                 this.#started = true;
-                await this.#openaiTurn();
+                await this.#anthropicTurn();
                 if (this.#shouldExit) {
                     return;
                 }
-                if (this.#hushFinish) {
-                    this.#finishTurnCount += 1;
-                }
-                this.#log(this.#openaiName, this.#messages[this.#messages.length - 1]!.content);
+                this.#log(this.#anthropicName, this.#messages[this.#messages.length - 1]!.content);
                 if (this.#shouldFinish()) {
                     await this.#finish();
                     return;
@@ -638,28 +661,10 @@ export class PhilosophyDialog {
                 if (this.#shouldExit) {
                     return;
                 }
-                if (this.#hushFinish) {
-                    this.#finishTurnCount += 1;
-                }
             }
-
-            this.#started = true;
-            await this.#anthropicTurn();
-            if (this.#shouldExit) {
-                return;
-            }
-            this.#log(this.#anthropicName, this.#messages[this.#messages.length - 1]!.content);
-            if (this.#shouldFinish()) {
-                await this.#finish();
-                return;
-            }
-            if (this.#shouldExit) {
-                return;
-            }
-            await sleep(SLEEP_BY_STEP);
-            if (this.#shouldExit) {
-                return;
-            }
+        } finally {
+            fs.closeSync(this.#logFp);
+            await this.#neo4jDriver.close();
         }
     }
 
@@ -1750,8 +1755,6 @@ ${this.#additionalSystemInstructions || '（なし）'}
 
             await this.#writeGraphToNeo4j(this.#conversationId, graph);
             this.#log('POSTPROC_NEO4J', 'Graph written to Neo4j');
-
-            await this.#neo4jDriver.close();
         } catch (e) {
             this.#log('POSTPROC_ERROR', String(e));
         }
@@ -1766,7 +1769,6 @@ ${this.#additionalSystemInstructions || '（なし）'}
             base_prompt: this.#basePrompt,
         }));
 
-        fs.closeSync(this.#logFp);
         output_to_html(this.#logFileName, {
             docsDir: this.#docsDir,
             logsDir: this.#logDir,
