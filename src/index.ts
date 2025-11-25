@@ -527,6 +527,8 @@ export const print = (text: string) => new Promise<void>((res, rej) => {
 });
 
 export class PhilosophyDialog {
+    static readonly #TOKEN = Symbol();
+
     #openaiClient: OpenAI;
     #anthropicClient: Anthropic;
     #googleClient: GoogleGenAI;
@@ -558,9 +560,14 @@ export class PhilosophyDialog {
     #additionalSystemInstructions: string;
     #basePrompt: string;
     #shouldExit = false;
+    #hasRun = false;
     #neo4jDriver;
 
-    static async create(args: Partial<PhilosophyDialogArgs> = {}): Promise<PhilosophyDialog> {
+    static async execute(args: Partial<PhilosophyDialogArgs>): Promise<void> {
+        await (await this.#create(args)).#run();
+    }
+
+    static async #create(args: Partial<PhilosophyDialogArgs> = {}): Promise<PhilosophyDialog> {
         const config: Required<PhilosophyDialogArgs> = {
             logDir: args.logDir ?? DEFAULT_LOG_DIR,
             dataDir: args.dataDir ?? DEFAULT_DATA_DIR,
@@ -572,10 +579,14 @@ export class PhilosophyDialog {
         };
         const data = await readModelDataFromDir(config.dataDir, 'openai');
         const additional = data.additionalSystemInstructions ?? '';
-        return new PhilosophyDialog(config, additional);
+        return new PhilosophyDialog(this.#TOKEN, config, additional);
     }
 
-    private constructor(config: Required<PhilosophyDialogArgs>, additionalSystemInstructions: string) {
+    private constructor(token: symbol, config: Required<PhilosophyDialogArgs>, additionalSystemInstructions: string) {
+        if (token !== PhilosophyDialog.#TOKEN || new.target !== PhilosophyDialog) {
+            throw new TypeError('Trying to call the private constructor');
+        }
+
         this.#additionalSystemInstructions = additionalSystemInstructions || '';
         this.#logDir = config.logDir;
         this.#dataDir = config.dataDir;
@@ -615,7 +626,11 @@ export class PhilosophyDialog {
         this.#initializeConversation();
     }
 
-    async run() {
+    async #run() {
+        if (this.#hasRun) {
+            throw new Error('PhilosophyDialog.run() may only be called once per instance.');
+        }
+        this.#hasRun = true;
         try {
             while (!this.#shouldExit) {
                 if (this.#started || this.#startingSide === 'anthropic') {
@@ -2481,6 +2496,5 @@ ${this.#additionalSystemInstructions || '（なし）'}
 }
 
 if (IS_MAIN) {
-    const dialog = await PhilosophyDialog.create({});
-    await dialog.run();
+    await PhilosophyDialog.execute({});
 }
