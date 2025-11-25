@@ -41,6 +41,15 @@ const OPENAI_NAME = 'GPT 5.1';
 const ANTHROPIC_NAME = 'Claude Haiku 4.5';
 
 /// TYPES
+export interface PhilosophyDialogArgs {
+    logDir: string;
+    dataDir: string;
+    openaiModel: string;
+    anthropicModel: string;
+    openaiName: string;
+    anthropicName: string;
+}
+
 type ModelSide = 'openai' | 'anthropic';
 
 export interface ConversationSummary {
@@ -290,7 +299,7 @@ fs.mkdirSync(TOOL_STATS_DIR, {
 });
 
 const neo4jDriver = neo4j.driver(
-    "neo4j://localhost:7687",
+    `neo4j://${process.env.NEO4J_HOST || 'localhost:7687'}`,
     neo4j.auth.basic("neo4j", process.env.NEO4J_PASSWORD || "neo4j"),
     {
         /* optional tuning */
@@ -612,11 +621,11 @@ const findLastOpenAIMessageContent = (
     return undefined;
 };
 
-const sleep = (ms: number) => new Promise<void>((res) => {
+export const sleep = (ms: number) => new Promise<void>((res) => {
     setTimeout(() => res(), ms);
 });
 
-const print = (text: string) => new Promise<void>((res, rej) => {
+export const print = (text: string) => new Promise<void>((res, rej) => {
     try {
         fs.write(1, text, (err) => {
             if (err) {
@@ -656,7 +665,7 @@ export class PhilosophyDialog {
     #basePrompt: string;
     #shouldExit = false;
 
-    static async create(): Promise<PhilosophyDialog> {
+    static async create(args: Partial<PhilosophyDialogArgs>): Promise<PhilosophyDialog> {
         const data = await getData('openai');
         const additional = data.additionalSystemInstructions ?? '';
         return new PhilosophyDialog(additional);
@@ -2399,6 +2408,6 @@ ${this.#additionalSystemInstructions || '（なし）'}
 }
 
 if (IS_MAIN) {
-    const dialog = await PhilosophyDialog.create();
+    const dialog = await PhilosophyDialog.create({});
     await dialog.run();
 }
