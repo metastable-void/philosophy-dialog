@@ -14,8 +14,11 @@ import { GoogleGenAI } from "@google/genai";
 
 import { output_to_html } from './html.js';
 
+/// false if we are imported from other scripts
+export const IS_MAIN = process.argv[1] === import.meta.filename;
+
 /// INITIALIZE ENV
-dotenv.config();
+if (IS_MAIN) dotenv.config();
 
 /// CONST DEFINITIONS
 const GPT_5_1_MAX = 400000;
@@ -651,6 +654,7 @@ export class PhilosophyDialog {
     #anthropicTools: Anthropic.Messages.Tool[];
     #additionalSystemInstructions: string;
     #basePrompt: string;
+    #shouldExit = false;
 
     static async create(): Promise<PhilosophyDialog> {
         const data = await getData('openai');
@@ -680,19 +684,28 @@ export class PhilosophyDialog {
     }
 
     async run() {
-        while (true) {
+        while (!this.#shouldExit) {
             if (this.#started || this.#startingSide === 'anthropic') {
                 this.#started = true;
                 await this.#openaiTurn();
+                if (this.#shouldExit) {
+                    return;
+                }
                 if (this.#hushFinish) {
                     this.#finishTurnCount += 1;
                 }
                 this.#log(OPENAI_NAME, this.#messages[this.#messages.length - 1]!.content);
                 if (this.#shouldFinish()) {
                     await this.#finish();
-                    break;
+                    return;
+                }
+                if (this.#shouldExit) {
+                    return;
                 }
                 await sleep(SLEEP_BY_STEP);
+                if (this.#shouldExit) {
+                    return;
+                }
                 if (this.#hushFinish) {
                     this.#finishTurnCount += 1;
                 }
@@ -700,12 +713,21 @@ export class PhilosophyDialog {
 
             this.#started = true;
             await this.#anthropicTurn();
+            if (this.#shouldExit) {
+                return;
+            }
             this.#log(ANTHROPIC_NAME, this.#messages[this.#messages.length - 1]!.content);
             if (this.#shouldFinish()) {
                 await this.#finish();
-                break;
+                return;
+            }
+            if (this.#shouldExit) {
+                return;
             }
             await sleep(SLEEP_BY_STEP);
+            if (this.#shouldExit) {
+                return;
+            }
         }
     }
 
@@ -1425,6 +1447,7 @@ ${this.#additionalSystemInstructions || '（なし）'}
     }
 
     async #openaiTurn() {
+        if (this.#shouldExit) return;
         const msgs: OpenAI.Responses.ResponseInput = this.#messages.map(msg => (
             msg.name === 'anthropic'
                 ? { role: 'user', content: msg.content }
@@ -1554,6 +1577,7 @@ ${this.#additionalSystemInstructions || '（なし）'}
     }
 
     async #anthropicTurn() {
+        if (this.#shouldExit) return;
         const msgs: Anthropic.Messages.MessageParam[] = this.#messages.map(msg => (
             msg.name === 'openai'
                 ? { role: 'user', content: [{ type: 'text', text: msg.content }] }
@@ -1657,6 +1681,10 @@ ${this.#additionalSystemInstructions || '（なし）'}
     }
 
     async #finish() {
+        if (this.#shouldExit) {
+            return;
+        }
+        this.#shouldExit = true;
         this.#log(
             '司会',
             (this.#hushFinish ? 'みなさんのコンテキスト長が限界に近づいてきたので、' : 'モデルの一方が議論が熟したと判断したため、')
@@ -1689,7 +1717,6 @@ ${this.#additionalSystemInstructions || '（なし）'}
 
         fs.closeSync(this.#logFp);
         output_to_html(this.#logFileName);
-        process.exit(0);
     }
 
     async #terminateDialogHandler(_modelSide: ModelSide, _args: TerminateDialogArgs): Promise<TerminateDialogResult> {
@@ -2371,5 +2398,7 @@ ${this.#additionalSystemInstructions || '（なし）'}
     }
 }
 
-const dialog = await PhilosophyDialog.create();
-await dialog.run();
+if (IS_MAIN) {
+    const dialog = await PhilosophyDialog.create();
+    await dialog.run();
+}
