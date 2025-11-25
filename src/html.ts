@@ -127,137 +127,164 @@ export const NOTICES = `
 出力の解釈には慎重になってください。
 `;
 
-const TOOL_STATS_DIR = './data/tool-stats';
+const DEFAULT_DOCS_DIR = './docs';
+const DEFAULT_LOGS_DIR = './logs';
+const DEFAULT_TOOL_STATS_DIR = './data/tool-stats';
 
-export const output_to_html = (jsonl_path: string) => {
-    const basename = path.basename(jsonl_path);
-    const name = basename.slice(0, -6);
-    let body = `<h1>対話ログ: ${escapeHtml(name)}</h1>`;
-    const lines = fs.readFileSync(jsonl_path, 'utf-8')
-        .split('\n')
-        .map(s => s.trim())
-        .filter(s => s != '')
-        .map(j => JSON.parse(j));
-    const toolStats = computeToolStats(lines);
-    fs.mkdirSync(TOOL_STATS_DIR, { recursive: true });
-    fs.writeFileSync(
-        path.join(TOOL_STATS_DIR, `${name}.json`),
-        JSON.stringify(toolStats, null, 2),
-        'utf-8',
-    );
-    
-    body += `<div class='notices'>${safeMarkdown(NOTICES)}</div>`;
-    const summaryDataLines = lines.filter(l => l.name == 'POSTPROC_SUMMARY');
-    if (summaryDataLines[0]) {
-        try {
-            const summaryData = JSON.parse(summaryDataLines[0].text);
-            if (summaryData?.title) {
-                body += `<p class='summarized-title'><i>${escapeHtml(summaryData?.title)}</i></p>`;
-            }
-            body += `<div class='summary'>`
-                + `<h2>要点</h2>`
-                + `<div class='summary-text'>${safeMarkdown(summaryData?.japanese_summary ?? '')}</div>`
-                + `</div>`;
-        } catch (_e) {}
+export interface HtmlBuilderArgs {
+    docsDir: string;
+    logsDir: string;
+    toolStatsDir: string;
+}
+
+export class HtmlBuilder {
+    #docsDir: string;
+    #logsDir: string;
+    #toolStatsDir: string;
+
+    constructor(args: Partial<HtmlBuilderArgs> = {}) {
+        this.#docsDir = args.docsDir ?? DEFAULT_DOCS_DIR;
+        this.#logsDir = args.logsDir ?? DEFAULT_LOGS_DIR;
+        this.#toolStatsDir = args.toolStatsDir ?? DEFAULT_TOOL_STATS_DIR;
     }
 
-    let codePointsCount = 0;
-    let baseSystemPrompt = '';
-    lines.forEach(msg => {
-        if (msg.name == '司会' || msg.name.startsWith('POSTPROC_')) return;
-        if (msg.name.endsWith(')')) return;
-        if (msg.name != 'EOF') {
-            codePointsCount += [... msg.text].length;
-        } else {
+    buildFromLog(jsonlPath: string) {
+        const basename = path.basename(jsonlPath);
+        const name = basename.slice(0, -6);
+        let body = `<h1>対話ログ: ${escapeHtml(name)}</h1>`;
+        const lines = fs.readFileSync(jsonlPath, 'utf-8')
+            .split('\n')
+            .map(s => s.trim())
+            .filter(s => s !== '')
+            .map(j => JSON.parse(j));
+        const toolStats = computeToolStats(lines);
+        fs.mkdirSync(this.#toolStatsDir, { recursive: true });
+        fs.writeFileSync(
+            path.join(this.#toolStatsDir, `${name}.json`),
+            JSON.stringify(toolStats, null, 2),
+            'utf-8',
+        );
+
+        body += `<div class='notices'>${safeMarkdown(NOTICES)}</div>`;
+        const summaryDataLines = lines.filter(l => l.name == 'POSTPROC_SUMMARY');
+        if (summaryDataLines[0]) {
             try {
-                const data = JSON.parse(msg.text);
-                baseSystemPrompt = String(data?.base_prompt ?? '');
+                const summaryData = JSON.parse(summaryDataLines[0].text);
+                if (summaryData?.title) {
+                    body += `<p class='summarized-title'><i>${escapeHtml(summaryData?.title)}</i></p>`;
+                }
+                body += `<div class='summary'>`
+                    + `<h2>要点</h2>`
+                    + `<div class='summary-text'>${safeMarkdown(summaryData?.japanese_summary ?? '')}</div>`
+                    + `</div>`;
             } catch (_e) {}
         }
-    });
 
-    body += `<div class='stats'>文字数: ${codePointsCount}</div>`;
-
-    body += `<details class='base-prompt'><summary>ベースシステムプロンプト</summary><div class='base-prompt-content'>${safeMarkdown(baseSystemPrompt)}</div></details>`;
-    body += renderToolStats(toolStats);
-
-    let side = 0;
-    loop: for (const msg of lines) {
-        body += `<div class='speaker'>`
-            + `<div class='name'>${escapeHtml(msg.name)}</div>`
-            + `<div class='date'>${escapeHtml(msg.date)}</div></div>`;
-        
-        switch (msg.name) {
-            case '司会': {
-                body += `<div class='chair message'>${safeMarkdown(msg.text)}</div>`;
-                break;
-            }
-
-            case 'EOF': {
-                const data = JSON.parse(msg.text);
-                const md = '```json\n' + JSON.stringify(data, null, 4) + '\n```\n';
-                body += `<div class='eof message'>${safeMarkdown(md)}</div>`;
-                break loop;
-            }
-
-            default: {
-                const isSpecial = msg.name.startsWith('POSTPROC_');
-                let cl = (!isSpecial) ? 'llm message' : 'postproc message';
-                if (!isSpecial) {
-                    cl += ` side-${side}`;
-                }
-
-                if (isSpecial) {
-                    cl += ' special';
-                } else if (msg.name.endsWith(' (thinking)')) {
-                    cl += ' thinking';
-                } else if (msg.name.endsWith(' (tool call)')) {
-                    cl += ' tool-call';
-                } else if (msg.name.endsWith(' (tool result)')) {
-                    cl += ' tool-result';
-                } else {
-                    side = side == 0 ? 1 : 0;
-                }
+        let codePointsCount = 0;
+        let baseSystemPrompt = '';
+        lines.forEach(msg => {
+            if (msg.name == '司会' || msg.name.startsWith('POSTPROC_')) return;
+            if (msg.name.endsWith(')')) return;
+            if (msg.name != 'EOF') {
+                codePointsCount += [...msg.text].length;
+            } else {
                 try {
                     const data = JSON.parse(msg.text);
-                    const md = '```json\n' + JSON.stringify(data, null, 4) + '\n```\n';
-                    body += `<div class='${cl}'>${safeMarkdown(md)}</div>`;
-                } catch (_e) {
-                    body += `<div class='${cl}'>${safeMarkdown(msg.text)}</div>`;
+                    baseSystemPrompt = String(data?.base_prompt ?? '');
+                } catch (_e) {}
+            }
+        });
+
+        body += `<div class='stats'>文字数: ${codePointsCount}</div>`;
+
+        body += `<details class='base-prompt'><summary>ベースシステムプロンプト</summary><div class='base-prompt-content'>${safeMarkdown(baseSystemPrompt)}</div></details>`;
+        body += renderToolStats(toolStats);
+
+        let side = 0;
+        loop: for (const msg of lines) {
+            body += `<div class='speaker'>`
+                + `<div class='name'>${escapeHtml(msg.name)}</div>`
+                + `<div class='date'>${escapeHtml(msg.date)}</div></div>`;
+
+            switch (msg.name) {
+                case '司会': {
+                    body += `<div class='chair message'>${safeMarkdown(msg.text)}</div>`;
+                    break;
                 }
-                break;
+
+                case 'EOF': {
+                    const data = JSON.parse(msg.text);
+                    const md = '```json\n' + JSON.stringify(data, null, 4) + '\n```\n';
+                    body += `<div class='eof message'>${safeMarkdown(md)}</div>`;
+                    break loop;
+                }
+
+                default: {
+                    const isSpecial = msg.name.startsWith('POSTPROC_');
+                    let cl = (!isSpecial) ? 'llm message' : 'postproc message';
+                    if (!isSpecial) {
+                        cl += ` side-${side}`;
+                    }
+
+                    if (isSpecial) {
+                        cl += ' special';
+                    } else if (msg.name.endsWith(' (thinking)')) {
+                        cl += ' thinking';
+                    } else if (msg.name.endsWith(' (tool call)')) {
+                        cl += ' tool-call';
+                    } else if (msg.name.endsWith(' (tool result)')) {
+                        cl += ' tool-result';
+                    } else {
+                        side = side == 0 ? 1 : 0;
+                    }
+                    try {
+                        const data = JSON.parse(msg.text);
+                        const md = '```json\n' + JSON.stringify(data, null, 4) + '\n```\n';
+                        body += `<div class='${cl}'>${safeMarkdown(md)}</div>`;
+                    } catch (_e) {
+                        body += `<div class='${cl}'>${safeMarkdown(msg.text)}</div>`;
+                    }
+                    break;
+                }
             }
         }
-    }
 
-    const htmlPath = `./docs/${name}.html`;
-    const indexPath = `./docs/index.html`;
-    fs.writeFileSync(htmlPath, buildHtml(name, body));
+        fs.mkdirSync(this.#docsDir, { recursive: true });
+        const htmlPath = path.join(this.#docsDir, `${name}.html`);
+        const indexPath = path.join(this.#docsDir, `index.html`);
+        fs.writeFileSync(htmlPath, buildHtml(name, body));
 
-    const dir = fs.opendirSync('./docs');
-    let entry;
-    const list: string[] = [];
-    while (null != (entry = dir.readSync())) {
-        if (!entry.isFile()) continue;
-        const fname = entry.name;
-        if (!fname.endsWith('.html')) continue;
-        if (fname == 'index.html') continue;
-        list.push(fname);
-    }
-    dir.closeSync();
-    list.sort();
-    let listBody = `<h1>対話一覧</h1><ul>`;
-    for (const fname of list) {
-        const conversationName = fname.slice(0, -5);
-        listBody += `<li><a href='${escapeHtml(fname)}'>${escapeHtml(conversationName)}</a></li>`;
-    }
-    listBody += '</ul>';
-
-    const aggregateToolStats = () => {
-        const stats: ToolStats = {};
+        const dir = fs.opendirSync(this.#docsDir);
+        let entry;
+        const list: string[] = [];
+        while (null != (entry = dir.readSync())) {
+            if (!entry.isFile()) continue;
+            const fname = entry.name;
+            if (!fname.endsWith('.html')) continue;
+            if (fname == 'index.html') continue;
+            list.push(fname);
+        }
+        dir.closeSync();
+        list.sort();
+        let listBody = `<h1>対話一覧</h1><ul>`;
         for (const fname of list) {
             const conversationName = fname.slice(0, -5);
-            const statsPath = path.join(TOOL_STATS_DIR, `${conversationName}.json`);
+            listBody += `<li><a href='${escapeHtml(fname)}'>${escapeHtml(conversationName)}</a></li>`;
+        }
+        listBody += '</ul>';
+
+        const aggregated = this.#aggregateToolStats(list);
+        const aggregateSection = renderToolStats(aggregated);
+
+        const listHtml = buildHtml('対話一覧', listBody + aggregateSection);
+        fs.writeFileSync(indexPath, listHtml);
+    }
+
+    #aggregateToolStats(files: string[]): ToolStats {
+        const stats: ToolStats = {};
+        for (const fname of files) {
+            const conversationName = fname.slice(0, -5);
+            const statsPath = path.join(this.#toolStatsDir, `${conversationName}.json`);
             let perConvStats: ToolStats | null = null;
 
             if (fs.existsSync(statsPath)) {
@@ -269,7 +296,7 @@ export const output_to_html = (jsonl_path: string) => {
             }
 
             if (!perConvStats) {
-                const logPath = path.join('./logs', `${conversationName}.log.jsonl`);
+                const logPath = path.join(this.#logsDir, `${conversationName}.log.jsonl`);
                 if (!fs.existsSync(logPath)) continue;
                 try {
                     const logLines = fs.readFileSync(logPath, 'utf-8')
@@ -293,11 +320,10 @@ export const output_to_html = (jsonl_path: string) => {
             }
         }
         return stats;
-    };
+    }
+}
 
-    const aggregated = aggregateToolStats();
-    const aggregateSection = renderToolStats(aggregated);
-
-    const listHtml = buildHtml('対話一覧', listBody + aggregateSection);
-    fs.writeFileSync(indexPath, listHtml);
+export const output_to_html = (jsonl_path: string, args: Partial<HtmlBuilderArgs> = {}) => {
+    const builder = new HtmlBuilder(args);
+    builder.buildFromLog(jsonl_path);
 };

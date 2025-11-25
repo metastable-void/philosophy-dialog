@@ -33,6 +33,7 @@ const CONCEPT_LINK_REL = 'NORMALIZED_AS';
 
 const SLEEP_BY_STEP = 1000;
 const DEFAULT_LOG_DIR = './logs';
+const DEFAULT_DOCS_DIR = './docs';
 const LOG_FILE_SUFFIX = '.log.jsonl';
 const MAX_HISTORY_RESULTS = 100;
 const DEFAULT_DATA_DIR = './data';
@@ -49,6 +50,7 @@ const DEFAULT_ANTHROPIC_NAME = 'Claude Haiku 4.5';
 export interface PhilosophyDialogArgs {
     logDir: string;
     dataDir: string;
+    docsDir: string;
     openaiModel: string;
     anthropicModel: string;
     openaiName: string;
@@ -532,6 +534,7 @@ export class PhilosophyDialog {
     #dataDir: string;
     #toolStatsDir: string;
     #pendingSystemInstructionsFile: string;
+    #docsDir: string;
     #openaiModel: string;
     #anthropicModel: string;
     #openaiName: string;
@@ -561,6 +564,7 @@ export class PhilosophyDialog {
         const config: Required<PhilosophyDialogArgs> = {
             logDir: args.logDir ?? DEFAULT_LOG_DIR,
             dataDir: args.dataDir ?? DEFAULT_DATA_DIR,
+            docsDir: args.docsDir ?? DEFAULT_DOCS_DIR,
             openaiModel: args.openaiModel ?? DEFAULT_OPENAI_MODEL,
             anthropicModel: args.anthropicModel ?? DEFAULT_ANTHROPIC_MODEL,
             openaiName: args.openaiName ?? DEFAULT_OPENAI_NAME,
@@ -575,6 +579,7 @@ export class PhilosophyDialog {
         this.#additionalSystemInstructions = additionalSystemInstructions || '';
         this.#logDir = config.logDir;
         this.#dataDir = config.dataDir;
+        this.#docsDir = config.docsDir;
         this.#toolStatsDir = `${this.#dataDir}/${TOOL_STATS_SUBDIR}`;
         this.#pendingSystemInstructionsFile = `${this.#dataDir}/${PENDING_SYSTEM_INSTRUCTIONS_FILENAME}`;
         this.#openaiModel = config.openaiModel;
@@ -1762,7 +1767,11 @@ ${this.#additionalSystemInstructions || '（なし）'}
         }));
 
         fs.closeSync(this.#logFp);
-        output_to_html(this.#logFileName);
+        output_to_html(this.#logFileName, {
+            docsDir: this.#docsDir,
+            logsDir: this.#logDir,
+            toolStatsDir: this.#toolStatsDir,
+        });
     }
 
     async #terminateDialogHandler(_modelSide: ModelSide, _args: TerminateDialogArgs): Promise<TerminateDialogResult> {
