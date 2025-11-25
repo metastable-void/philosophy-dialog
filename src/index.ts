@@ -348,7 +348,7 @@ const aggregateToolStats = (entries: any[]): ToolUsageStats => {
 };
 
 const loadToolUsageStatsFromDirs = async (logDir: string, toolStatsDir: string, conversationId: string): Promise<ToolUsageStats | null> => {
-    const statsPath = `${toolStatsDir}/${conversationId}.json`;
+    const statsPath = `${toolStatsDir}/${conversationId}.log.json`;
     try {
         const text = await fs.promises.readFile(statsPath, 'utf-8');
         return JSON.parse(text);
@@ -547,8 +547,15 @@ export class PhilosophyDialog {
     #messages: Message[] = [];
     #startingSide: ModelSide;
     #hushFinish = false;
+
+    // not stats for monitoring API usage, but a number to measure the rough size of the conversation.
     #openaiTokens = 0;
     #anthropicTokens = 0;
+
+    // API usage
+    #openaiApiTokenUsage = 0;
+    #anthropicApiTokenUsage = 0;
+
     #openaiFailureCount = 0;
     #anthropicFailureCount = 0;
     #finishTurnCount = 0;
