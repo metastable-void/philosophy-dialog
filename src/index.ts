@@ -1785,6 +1785,8 @@ ${this.#additionalSystemInstructions || '（なし）'}
             reason: this.#hushFinish ? 'token_limit' : 'model_decision',
             openai_tokens: this.#openaiTokens,
             anthropic_tokens: this.#anthropicTokens,
+            openai_api_token_usage: this.#openaiApiTokenUsage,
+            anthropic_api_token_usage: this.#anthropicApiTokenUsage,
             openai_failures: this.#openaiFailureCount,
             anthropic_failures: this.#anthropicFailureCount,
             starting_side: this.#startingSide,
