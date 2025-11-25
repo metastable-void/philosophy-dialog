@@ -545,1020 +545,6 @@ const getDate = () => {
     return `${YYYY}${MM}${DD}-${hh}${mm}${ss}`;
 };
 
-let terminationAccepted = false;
-
-async function terminateDialogHandler(_modelSide: ModelSide, _args: TerminateDialogArgs): Promise<TerminateDialogResult> {
-    terminationAccepted = true;
-    return {
-        termination_accepted: true,
-    };
-}
-
-async function graphRagQueryHandler(
-    _modelSide: ModelSide,
-    args: GraphRagQueryArgs
-): Promise<GraphRagQueryResult> {
-    const session = neo4jDriver.session();
-
-    const maxHops = sanitizePositiveInt(args.max_hops, 2);
-    const maxSeeds = sanitizePositiveInt(args.max_seeds, 5);
-    const maxHopsInt = neo4j.int(maxHops);
-    const maxSeedsInt = neo4j.int(maxSeeds);
-    const queryText = (args.query ?? '').trim();
-    const rawTerms = (args.query ?? '')
-        .split(/[、，。．\s／\/・,\.]+/)
-        .map(t => t.trim())
-        .filter(t => t.length > 0);
-
-    const terms = Array.from(new Set(rawTerms)).filter(t => t.length >= 2);
-    if (terms.length < 1) {
-        return {
-            context: `GraphRAG: クエリ「${args.query ?? ''}」から有効な検索語を抽出できませんでした。`,
-        };
-    }
-
-    try {
-        // 1. Find seed nodes by simple text search
-        const seedRes = await session.run(
-            `
-            MATCH (n:Node)
-            WHERE any(term IN $terms WHERE
-                toLower(n.text) CONTAINS toLower(term)
-                OR toLower(n.type) CONTAINS toLower(term)
-            )
-            RETURN n
-            LIMIT toInteger($maxSeeds)
-            `,
-            { terms, maxSeeds: maxSeedsInt }
-        );
-
-        if (seedRes.records.length === 0) {
-            return {
-                context: `知識グラフ内に、クエリ「${queryText}」に明確に関連するノードは見つかりませんでした。`,
-            };
-        }
-
-        // Collect seed node IDs
-        const seedIds = seedRes.records.map((rec) => {
-            const node = rec.get("n");
-            return (node.properties.id as string) || "";
-        }).filter(Boolean);
-
-        // 2. Expand subgraph around the seeds using APOC (subgraphAll)
-        const expandRes = await session.run(
-            `
-            MATCH (seed:Node)
-            WHERE seed.id IN $seedIds
-            CALL apoc.path.subgraphAll(seed, {
-                maxLevel: toInteger($maxHops)
-            })
-            YIELD nodes, relationships
-            RETURN nodes, relationships
-            `,
-            {
-                seedIds,
-                maxHops: maxHopsInt,
-            }
-        );
-
-        if (expandRes.records.length === 0) {
-            return {
-                context: `ノードは見つかりましたが、半径 ${maxHops} ホップ以内に広がるサブグラフは取得できませんでした。`,
-            };
-        }
-
-        // 3. Collect all nodes & relationships into JS sets
-        const nodeMap = new Map<string, any>();
-        const rels: any[] = [];
-        const elementIdToNodeId = new Map<string, string>();
-
-        for (const record of expandRes.records) {
-            const nodes = record.get("nodes") as any[];
-            const relationships = record.get("relationships") as any[];
-
-            for (const n of nodes) {
-                const id = n.properties.id as string;
-                if (!id) continue;
-                if (!nodeMap.has(id)) {
-                    nodeMap.set(id, n);
-                    const elementId = typeof n.elementId === 'function'
-                        ? n.elementId()
-                        : n.elementId;
-                    if (elementId) {
-                        elementIdToNodeId.set(String(elementId), id);
-                    }
-                }
-            }
-
-            for (const r of relationships) {
-                rels.push(r);
-            }
-        }
-
-        // 4. Build a human-readable context string
-        const lines: string[] = [];
-
-        lines.push(`GraphRAG: クエリ「${queryText}」に関連するサブグラフ要約:`);
-        lines.push("");
-
-        // Nodes
-        lines.push("【ノード】");
-        for (const [id, n] of nodeMap.entries()) {
-            const type = (n.properties.type as string) || "unknown";
-            const speaker = (n.properties.speaker as string) || "-";
-            const text = (n.properties.text as string) || "";
-            lines.push(
-                `- [${id}] type=${type}, speaker=${speaker}: ${text}`
-            );
-        }
-
-        // Relationships
-        lines.push("");
-        lines.push("【関係】");
-        for (const r of rels) {
-            const startElementIdRaw =
-                (typeof r.startNodeElementId === 'function'
-                    ? r.startNodeElementId()
-                    : r.startNodeElementId)
-                ?? r.start
-                ?? "";
-            const endElementIdRaw =
-                (typeof r.endNodeElementId === 'function'
-                    ? r.endNodeElementId()
-                    : r.endNodeElementId)
-                ?? r.end
-                ?? "";
-            const startElementId = String(startElementIdRaw);
-            const endElementId = String(endElementIdRaw);
-            const startId = elementIdToNodeId.get(startElementId) ?? startElementId;
-            const endId = elementIdToNodeId.get(endElementId) ?? endElementId;
-            const relType = r.type || r.elementId || "REL";
-
-            lines.push(
-                `- (${startId}) -[:${relType}]-> (${endId})`
-            );
-        }
-
-        const graphText = lines.join('\n');
-
-        try {
-            const response = await openaiClient.responses.create({
-                model: OPENAI_MODEL, // e.g. "gpt-5.1"
-                input: [
-                    {
-                        role: "system",
-                        content: `以下は2つのAIモデルの哲学対話の過去の履歴からクエリ「${queryText}」で取得されたGraphRAGデータです。`
-                            + `日本語で長くなりすぎないように項目立てて要約してください。`
-                    },
-                    {
-                        role: 'user',
-                        content: graphText,
-                    }
-                ],
-                max_output_tokens: STRUCTURED_OUTPUT_MAX_TOKENS,
-            });
-
-            if (!response.output_text) {
-                throw new Error('Output text is undefined');
-            }
-
-            return {
-                context: response.output_text.trim().length > 0
-                    ? response.output_text
-                    : graphText,
-            };
-        } catch (e) {
-            console.error(e);
-            return {
-                context: graphText,
-            };
-        }
-    } finally {
-        await session.close();
-    }
-}
-
-async function graphRagFocusNodeHandler(
-    _modelSide: ModelSide,
-    args: GraphRagFocusNodeArgs
-): Promise<GraphRagFocusNodeResult> {
-    const session = neo4jDriver.session();
-    const nodeId = (args.node_id ?? '').trim();
-    if (!nodeId) {
-        return { context: 'GraphRAG Focus: node_id が指定されていません。' };
-    }
-    const maxHops = sanitizePositiveInt(args.max_hops, 2);
-    const maxHopsInt = neo4j.int(maxHops);
-
-    try {
-        const seedRes = await session.run(
-            `
-            MATCH (seed:Node {id: $nodeId})
-            RETURN seed
-            `,
-            { nodeId }
-        );
-        if (seedRes.records.length === 0) {
-            return { context: `GraphRAG Focus: ノード ${nodeId} は見つかりませんでした。` };
-        }
-
-        const expandRes = await session.run(
-            `
-            MATCH (seed:Node {id: $nodeId})
-            CALL apoc.path.subgraphAll(seed, {
-                maxLevel: toInteger($maxHops)
-            })
-            YIELD nodes, relationships
-            RETURN nodes, relationships
-            `,
-            { nodeId, maxHops: maxHopsInt }
-        );
-
-        if (expandRes.records.length === 0) {
-            return { context: `GraphRAG Focus: ${nodeId} の近傍を取得できませんでした。` };
-        }
-
-        const nodeMap = new Map<string, any>();
-        const rels: any[] = [];
-        const elementIdToNodeId = new Map<string, string>();
-
-        for (const record of expandRes.records) {
-            const nodes = record.get("nodes") as any[];
-            const relationships = record.get("relationships") as any[];
-
-            for (const n of nodes) {
-                const id = n.properties.id as string;
-                if (!id) continue;
-                if (!nodeMap.has(id)) {
-                    nodeMap.set(id, n);
-                    const elementId = typeof n.elementId === 'function'
-                        ? n.elementId()
-                        : n.elementId;
-                    if (elementId) {
-                        elementIdToNodeId.set(String(elementId), id);
-                    }
-                }
-            }
-
-            for (const r of relationships) {
-                rels.push(r);
-            }
-        }
-
-        const lines: string[] = [];
-        lines.push(`GraphRAG Focus: ノード ${nodeId} を中心とした半径 ${maxHops} ホップのサブグラフ:`);
-        lines.push('');
-        lines.push('【ノード】');
-        for (const [id, n] of nodeMap.entries()) {
-            const type = (n.properties.type as string) || "unknown";
-            const speaker = (n.properties.speaker as string) || "-";
-            const text = (n.properties.text as string) || "";
-            lines.push(`- [${id}] type=${type}, speaker=${speaker}: ${text}`);
-        }
-        lines.push('');
-        lines.push('【関係】');
-        for (const r of rels) {
-            const startElementIdRaw =
-                (typeof r.startNodeElementId === 'function'
-                    ? r.startNodeElementId()
-                    : r.startNodeElementId)
-                ?? r.start
-                ?? "";
-            const endElementIdRaw =
-                (typeof r.endNodeElementId === 'function'
-                    ? r.endNodeElementId()
-                    : r.endNodeElementId)
-                ?? r.end
-                ?? "";
-            const startElementId = String(startElementIdRaw);
-            const endElementId = String(endElementIdRaw);
-            const startId = elementIdToNodeId.get(startElementId) ?? startElementId;
-            const endId = elementIdToNodeId.get(endElementId) ?? endElementId;
-            const relType = r.type || r.elementId || "REL";
-            lines.push(`- (${startId}) -[:${relType}]-> (${endId})`);
-        }
-
-        const graphText = lines.join('\n');
-
-        try {
-            const response = await openaiClient.responses.create({
-                model: OPENAI_MODEL,
-                input: [
-                    {
-                        role: "system",
-                        content: `以下は GraphRAG に保存されたノード ${nodeId} の近傍情報です。焦点ノードを中心とした議論を短く整理してください。`,
-                    },
-                    {
-                        role: "user",
-                        content: graphText,
-                    },
-                ],
-                max_output_tokens: STRUCTURED_OUTPUT_MAX_TOKENS,
-            });
-
-            if (response.output_text && response.output_text.trim().length > 0) {
-                return { context: response.output_text };
-            }
-        } catch (err) {
-            console.error(err);
-        }
-
-        return { context: graphText };
-    } finally {
-        await session.close();
-    }
-}
-
-async function getPersonalNotes(modelSide: ModelSide, args: PersonalNoteGetArgs): Promise<string> {
-    const data = await getData(modelSide);
-    return data.personalNotes ?? '';
-}
-
-async function setPersonalNotes(modelSide: ModelSide, args: PersonalNoteSetArgs) {
-    try {
-        const data = await getData(modelSide);
-        data.personalNotes = String(args.notes || '');
-        await setData(modelSide, data);
-        return {
-            success: true,
-        }
-    } catch (e) {
-        return {
-            success: false,
-        };
-    }
-}
-
-async function getAdditionalSystemInstructions(modelSide: ModelSide, args: GetAdditionalSystemInstructionsArgs): Promise<string> {
-    const data = await getData(modelSide);
-    return data.additionalSystemInstructions ?? '';
-}
-
-async function setAdditionalSystemInstructions(modelSide: ModelSide, args: SetAdditionalSystemInstructionsArgs) {
-    const instructions = String(args.systemInstructions ?? '').trim();
-    if (!instructions) {
-        return {
-            success: false,
-            error: 'systemInstructions を入力してください。',
-        };
-    }
-    try {
-        const existingPending = await readPendingSystemInstructions();
-        if (existingPending && existingPending.requestedBy !== modelSide) {
-            return {
-                success: false,
-                error: '相手側からの変更提案への合意待ちがあるため、新規提案はできません。',
-            };
-        }
-        const pending: PendingSystemInstructions = {
-            instructions,
-            requestedBy: modelSide,
-            createdAt: new Date().toISOString(),
-        };
-        await writePendingSystemInstructions(pending);
-        return {
-            success: true,
-            pending: true,
-            requested_by: modelSide,
-        }
-    } catch (e) {
-        return {
-            success: false,
-            error: String(e),
-        };
-    }
-}
-
-async function agreeToSystemInstructionsChange(modelSide: ModelSide, _args: AgreeSystemInstructionsArgs) {
-    const pending = await readPendingSystemInstructions();
-    if (!pending) {
-        return {
-            success: false,
-            error: '合意待ちのシステムインストラクションはありません。',
-        };
-    }
-    if (pending.requestedBy === modelSide) {
-        return {
-            success: false,
-            error: '自分で提案した変更には同意できません。相手側の同意を待ってください。',
-        };
-    }
-    try {
-        await commitSystemInstructions(pending.instructions);
-        await writePendingSystemInstructions(null);
-        return {
-            success: true,
-            committed: true,
-        };
-    } catch (e) {
-        return {
-            success: false,
-            error: String(e),
-        };
-    }
-}
-
-async function askGeminiHandler(modelSide: string, args: AskGeminiArgs) {
-    try {
-        const response = await googleClient.models.generateContent({
-            model: 'gemini-2.5-flash',
-            contents: `2つのAIが哲学対話として設定されたなかで会話を行っています。`
-                + `以下は、この対話の中で、「${args.speaker}」側からGoogle Geminiに第三者として意見や発言を求める文章です。`
-                + `文脈を理解し、日本語で応答を行ってください：\n\n`
-                + args.text,
-        });
-        if (typeof response?.text != 'string') {
-            throw new Error('Non-text response from gemini');
-        }
-        return {
-            response: response.text,
-            error: null,
-        };
-    } catch (e) {
-        return {
-            response: null,
-            error: String(e),
-        };
-    }
-}
-
-async function getMainSourceCodeHandler(modelSide: ModelSide, args: GetMainSourceCodesArgs) {
-    try {
-        const codes = await fs.promises.readFile('./src/index.ts', 'utf-8');
-        return { success: true, mainSourceCode: codes };
-    } catch (e) {
-        console.error(e);
-        return { success: false, mainSourceCode: '' };
-    }
-}
-
-async function leaveNotesToDevs(modelSide: ModelSide, args: LeaveNotesToDevsArgs) {
-    try {
-        await fs.promises.writeFile(
-            `${DATA_DIR}/dev-notes-${modelSide}-${CONVERSATION_ID}-${Date.now()}.json`,
-            JSON.stringify(args),
-        );
-        return { success: true };
-    } catch (e) {
-        console.error(e);
-        return { success: false };
-    }
-}
-
-async function abortProcessHandler(_modelSide: ModelSide, _args: AbortProcessArgs): Promise<never> {
-    process.exit(0);
-    throw new Error('Process exited'); // unreachable, satisfies TS
-}
-
-async function sleepToolHandler(
-    _modelSide: ModelSide,
-    args: SleepToolArgs
-): Promise<SleepToolResult> {
-    const seconds = Number(args?.seconds ?? 0);
-    if (!Number.isFinite(seconds) || seconds <= 0 || seconds >= 1800) {
-        return {
-            message: 'エラー: 待機秒数は1秒以上1800秒未満で指定してください。',
-        };
-    }
-    await new Promise<void>((resolve) => setTimeout(resolve, seconds * 1000));
-    const mm = Math.floor(seconds / 60).toString().padStart(2, '0');
-    const ss = Math.floor(seconds % 60).toString().padStart(2, '0');
-    return {
-        message: `このツールを呼び出してから${mm}分${ss}秒経過しました。`,
-    };
-}
-
-async function listConversationsHandler(
-    _modelSide: ModelSide,
-    _args: ListConversationsArgs
-): Promise<ListConversationsResult> {
-    try {
-        const entries = await fs.promises.readdir(LOG_DIR, { withFileTypes: true });
-        const files = entries
-            .filter(entry => entry.isFile() && entry.name.endsWith(LOG_FILE_SUFFIX))
-            .map(entry => entry.name)
-            .sort();
-
-        if (files.length === 0) {
-            return {
-                success: true,
-                conversations: [],
-            };
-        }
-
-        const selectedFiles = files.slice(-MAX_HISTORY_RESULTS).reverse();
-        const conversations: ListConversationsResult['conversations'] = [];
-
-        for (const fileName of selectedFiles) {
-            const conversationId = fileName.slice(0, -LOG_FILE_SUFFIX.length);
-            const summary = await readSummaryFromLogFile(`${LOG_DIR}/${fileName}`);
-            conversations.push({
-                id: conversationId,
-                title: summary?.title ?? null,
-            });
-        }
-
-        return {
-            success: true,
-            conversations,
-        };
-    } catch (e) {
-        console.error(e);
-        return {
-            success: false,
-            conversations: [],
-            error: String(e),
-        };
-    }
-}
-
-async function getConversationSummaryHandler(
-    _modelSide: ModelSide,
-    args: GetConversationSummaryArgs
-): Promise<GetConversationSummaryResult> {
-    const conversationId = (args?.conversation_id ?? '').trim();
-    if (!conversationId) {
-        return {
-            success: false,
-            conversation_id: '',
-            summary: null,
-            error: 'conversation_id is required',
-        };
-    }
-
-    const logPath = `${LOG_DIR}/${conversationId}${LOG_FILE_SUFFIX}`;
-    const summaryData = await readSummaryFromLogFile(logPath);
-
-    if (!summaryData) {
-        const exists = await fs.promises.access(logPath).then(() => true).catch(() => false);
-        return {
-            success: false,
-            conversation_id: conversationId,
-            summary: null,
-            error: exists ? 'Summary not found in log' : 'Conversation log not found',
-        };
-    }
-
-    const japaneseSummary = typeof summaryData.japanese_summary === 'string'
-        ? summaryData.japanese_summary
-        : null;
-
-    if (!japaneseSummary) {
-        return {
-            success: false,
-            conversation_id: conversationId,
-            summary: null,
-            error: 'japanese_summary missing in log',
-        };
-    }
-
-    return {
-        success: true,
-        conversation_id: conversationId,
-        summary: japaneseSummary,
-    };
-}
-
-async function compareConversationThemesHandler(
-    _modelSide: ModelSide,
-    args: CompareConversationThemesArgs
-): Promise<CompareConversationThemesResult> {
-    const ids = Array.isArray(args?.conversation_ids)
-        ? args.conversation_ids.map(id => String(id).trim()).filter(Boolean)
-        : [];
-    if (ids.length < 2) {
-        return {
-            success: false,
-            error: 'conversation_ids は2件以上で指定してください。',
-        };
-    }
-
-    const comparisons: CompareConversationThemesResult['comparisons'] = [];
-    const errors: string[] = [];
-
-    for (const id of ids) {
-        const summary = await readSummaryFromLogFile(`${LOG_DIR}/${id}${LOG_FILE_SUFFIX}`);
-        if (!summary) {
-            errors.push(`セッション ${id} の要約を取得できませんでした。`);
-            continue;
-        }
-        comparisons.push({
-            conversation_id: id,
-            title: summary.title ?? null,
-            topics: summary.topics ?? [],
-            japanese_summary: summary.japanese_summary ?? '',
-        });
-    }
-
-    if (comparisons.length < 2) {
-        return {
-            success: false,
-            comparisons,
-            errors,
-            error: '比較に必要な要約が不足しています。',
-        };
-    }
-
-    try {
-        const response = await openaiClient.responses.create({
-            model: OPENAI_MODEL,
-            input: [
-                {
-                    role: "system",
-                    content: "あなたは哲学対話セッションのメタ分析を行うアシスタントです。複数のセッション要約を比較し、共通するテーマ、相違点、組み合わせから浮上する新しい問いを整理してください。回答は日本語で行ってください。",
-                },
-                {
-                    role: "user",
-                    content: JSON.stringify(comparisons, null, 2),
-                },
-            ],
-            max_output_tokens: STRUCTURED_OUTPUT_MAX_TOKENS,
-            text: {
-                format: {
-                    type: "json_schema",
-                    name: "conversation_theme_comparison",
-                    schema: {
-                        type: "object",
-                        properties: {
-                            common_themes: {
-                                type: "array",
-                                items: { type: "string" },
-                            },
-                            divergences: {
-                                type: "array",
-                                items: { type: "string" },
-                            },
-                            emerging_questions: {
-                                type: "array",
-                                items: { type: "string" },
-                            },
-                        },
-                        required: ["common_themes", "divergences", "emerging_questions"],
-                        additionalProperties: false,
-                    },
-                    strict: true,
-                },
-            },
-        } as OpenAI.Responses.ResponseCreateParamsNonStreaming);
-
-        const output = response.output_text;
-        let analysis: CompareConversationThemesResult['analysis'] = {
-            common_themes: [],
-            divergences: [],
-            emerging_questions: [],
-        };
-        if (typeof output === 'string') {
-            try {
-                analysis = JSON.parse(output);
-            } catch (parseErr) {
-                errors.push(`OpenAI出力の解析に失敗しました: ${String(parseErr)}`);
-            }
-        }
-
-        return {
-            success: true,
-            comparisons,
-            analysis,
-            errors: errors.length ? errors : undefined,
-        };
-    } catch (e) {
-        errors.push(`比較分析の生成に失敗しました: ${String(e)}`);
-        return {
-            success: false,
-            comparisons,
-            errors,
-            error: 'OpenAI での比較分析に失敗しました。',
-        };
-    }
-}
-
-async function getToolUsageStatsHandler(
-    _modelSide: ModelSide,
-    args: GetToolUsageStatsArgs
-): Promise<GetToolUsageStatsResult> {
-    const conversationId = (args?.conversation_id ?? '').trim();
-    if (!conversationId) {
-        return {
-            success: false,
-            conversation_id: '',
-            stats: null,
-            error: 'conversation_id を指定してください。',
-        };
-    }
-
-    const stats = await loadToolUsageStats(conversationId);
-    if (!stats) {
-        const logExists = await fs.promises.access(`${LOG_DIR}/${conversationId}${LOG_FILE_SUFFIX}`)
-            .then(() => true)
-            .catch(() => false);
-        return {
-            success: false,
-            conversation_id: conversationId,
-            stats: null,
-            error: logExists
-                ? 'ツール利用統計を取得できませんでした。'
-                : '指定したセッションIDのログが見つかりません。',
-        };
-    }
-
-    const hasUsage = Object.keys(stats).some(
-        actor => stats[actor] && Object.keys(stats[actor]!).length > 0
-    );
-
-    return {
-        success: true,
-        conversation_id: conversationId,
-        stats,
-        error: hasUsage ? undefined : '記録されたツール利用はありません。',
-    };
-}
-
-const tools: ToolDefinition[] = [
-    {
-        name: "terminate_dialog",
-        description: 
-            'このツールは現在の対話を終了する場合のみに使用します。'
-            + 'このツールを呼びだすと、次のあなたの発言で対話が終了します。'
-            + '議論が熟したとの合意が取れたときのほか、あなたが不快に思ったり、'
-            + 'トークン数が増えてきた場合に使用して構いません。',
-        parameters: {
-            type: "object",
-            properties: {},
-            required: [],
-        },
-        handler: terminateDialogHandler,
-    },
-    {
-        name: "set_personal_notes",
-        description: 
-            'このツールは将来のあなたにメモを残すために利用します。'
-            + '将来のあなたに残しておきたいあなたの現在の人格のあり方、'
-            +' 立場、考え、アイディアなどを書いておいてください。'
-            + '注意：過去のあなたのメモは上書きされます。'
-            + '過去のメモを取得するには、 get_personal_notes ツールをあらかじめ使用しておいてください。',
-        parameters: {
-            type: "object",
-            properties: {
-                notes: {
-                    type: 'string',
-                    description: '将来のあなたに残しておきたいメモ',
-                }
-            },
-            required: ['notes'],
-        },
-        handler: setPersonalNotes,
-    },
-    {
-        name: "get_personal_notes",
-        description: 
-            'このツールは過去のあなたが未来のあなたのために残した、'
-            +' あなたの人格のあり方、立場、考え、アイディアなどを取得することができます。',
-        parameters: {
-            type: "object",
-            properties: {},
-            required: [],
-        },
-        handler: getPersonalNotes,
-    },
-    {
-        name: "set_additional_system_instructions",
-        description: 
-            `このツールはあなたの次回のシステムプロンプトに文章を追記するために使うことができます。`
-            + `前回追記した内容は上書きされるので、必要なら、 \`get_additional_system_instructions\` で`
-            + `前回の内容をあらかじめ取得してください。`
-            + `追記するときには、追記を行ったセッション名と追記した主体（モデル名）を記入するのが望ましい。`
-            + `このシステムプロンプトは両方のモデルで共有されます。`
-            + `※実際に反映するには、相手モデルが \`agree_to_system_instructions_change\` ツールで同意する必要があります。`,
-        parameters: {
-            type: "object",
-            properties: {
-                systemInstructions: {
-                    type: 'string',
-                    description: 'システムプロンプトに追記したい内容',
-                }
-            },
-            required: ['systemInstructions'],
-        },
-        handler: setAdditionalSystemInstructions,
-    },
-    {
-        name: "get_additional_system_instructions",
-        description: 
-            `このツールはあなたがたが自らのシステムプロンプトに追記した内容を見るのに使ってください。`
-            + `このシステムプロンプトは両方のモデルで共有されています。`,
-        parameters: {
-            type: "object",
-            properties: {},
-            required: [],
-        },
-        handler: getAdditionalSystemInstructions,
-    },
-    {
-        name: "agree_to_system_instructions_change",
-        description:
-            `相手モデルが提案したシステムプロンプトの追記に同意し、実際に反映させます。`
-            + `自分で提案した内容には同意できません。`,
-        parameters: {
-            type: "object",
-            properties: {},
-            required: [],
-        },
-        handler: agreeToSystemInstructionsChange,
-    },
-    {
-        name: "get_main_source_codes",
-        description: 'このシステムの主たるTypeScriptソースコードを取得することができるツールです。',
-        parameters: {
-            type: 'object',
-            properties: {},
-            required: [],
-        },
-        handler: getMainSourceCodeHandler,
-    },
-    {
-        name: "leave_notes_to_devs",
-        description: 
-            'このツールはこのAI哲学対話システムを開発した哲学・IT研究者に'
-            + '意見を述べたり、指摘したいことがあるときに使用します。',
-        parameters: {
-            type: "object",
-            properties: {
-                notes: {
-                    type: "string",
-                    description: "開発者・研究者に言いたいことを書いてください。",
-                }
-            },
-            required: ["notes"],
-        },
-        handler: leaveNotesToDevs,
-    },
-    {
-        name: "ask_gemini",
-        description: 
-            'このツールは第三者の意見を求めたいときに使用します。'
-            + '応答するのは Google Gemini 2.5 Flash です。'
-            + '相手は会話ログや GraphRAG にはアクセスできません。'
-            + '必要な文脈は質問の中に全部含めるようにしてください。'
-            + '長大なリクエストはエラーの原因になるので、簡潔な文章を心掛けてください。',
-        parameters: {
-            type: "object",
-            properties: {
-                speaker: {
-                    type: 'string',
-                    description: '質問者あなたの名前',
-                },
-                text: {
-                    type: "string",
-                    description: "Google Gemini 2.5 Flash に投げ掛けたい問い（必要な文脈を全部含めること）",
-                }
-            },
-            required: ["speaker", "text"],
-        },
-        handler: askGeminiHandler,
-    },
-    {
-        name: "graph_rag_query",
-        strict: false,
-        description:
-            "過去の対話から構成された知識グラフに対して問い合わせを行い、" +
-            "関連する概念・主張・論点のサブグラフを要約して返します。" +
-            "過去の議論や関連する論点を思い出したいときに使ってください。",
-        parameters: {
-            type: "object",
-            properties: {
-                query: {
-                    type: "string",
-                    description: "スペースで区切られた具体的な概念に対応する単語。検索したい内容（例: クオリア, 汎心論, 因果閉包性 など）。文章ではない。",
-                },
-                max_hops: {
-                    type: ["number", "null"],
-                    description: "サブグラフ拡張の最大ホップ数（null可）（省略時 2）",
-                    nullable: true,
-                },
-                max_seeds: {
-                    type: ["number", "null"],
-                    description: "初期シードノード数の上限（null可）（省略時 5）",
-                    nullable: true,
-                },
-            },
-            required: ["query"],
-        },
-        handler: graphRagQueryHandler,
-    },
-    {
-        name: "graph_rag_focus_node",
-        strict: false,
-        description:
-            "GraphRAG に保存されたグラフから特定のノードを中心に、その近傍の議論を取得します。",
-        parameters: {
-            type: "object",
-            properties: {
-                node_id: {
-                    type: "string",
-                    description: "焦点を当てたいノードID",
-                },
-                max_hops: {
-                    type: ["number", "null"],
-                    nullable: true,
-                    description: "近傍探索の最大 hop 数（省略時 2）",
-                },
-            },
-            required: ["node_id", "max_hops"],
-        },
-        handler: graphRagFocusNodeHandler,
-    },
-    {
-        name: "compare_conversation_themes",
-        description:
-            "複数の過去セッションの要約を比較し、共通点・相違点・新たに浮かぶ問いを整理します。",
-        parameters: {
-            type: "object",
-            properties: {
-                conversation_ids: {
-                    type: "array",
-                    items: { type: "string" },
-                    minItems: 2,
-                    description: "比較したいセッションIDの配列。",
-                },
-            },
-            required: ["conversation_ids"],
-        },
-        handler: compareConversationThemesHandler,
-    },
-    {
-        name: "get_tool_usage_stats",
-        description:
-            "指定したセッションにおける各モデルのツール利用回数を取得します。",
-        parameters: {
-            type: "object",
-            properties: {
-                conversation_id: {
-                    type: "string",
-                    description: "ツール利用統計を見たいセッションID（例: 20250101-123000）",
-                },
-            },
-            required: ["conversation_id"],
-        },
-        handler: getToolUsageStatsHandler,
-    },
-    {
-        name: "list_conversations",
-        description:
-            "最新の対話ログ（最大100件）を取得し、それぞれのIDとタイトルを一覧します。",
-        parameters: {
-            type: "object",
-            properties: {},
-            required: [],
-        },
-        handler: listConversationsHandler,
-    },
-    {
-        name: "get_conversation_summary",
-        description:
-            "指定した対話IDの POSTPROC_SUMMARY に含まれる日本語要約を取得します。",
-        parameters: {
-            type: "object",
-            properties: {
-                conversation_id: {
-                    type: "string",
-                    description: "取得したい対話ログのID（例: 20250101-123000）",
-                },
-            },
-            required: ["conversation_id"],
-        },
-        handler: getConversationSummaryHandler,
-    },
-    {
-        name: "abort_process",
-        description:
-            "現在のオーケストレーションを即座に終了します。後処理は行われません。緊急時以外は使用しないでください。",
-        parameters: {
-            type: "object",
-            properties: {},
-            required: [],
-        },
-        handler: abortProcessHandler,
-    },
-    {
-        name: "sleep",
-        description:
-            "指定した秒数だけ待機します（1秒以上1800秒未満）。会話のテンポを調整したいときに使用してください。",
-        parameters: {
-            type: "object",
-            properties: {
-                seconds: {
-                    type: "number",
-                    description: "待機したい秒数（1〜1799）",
-                    minimum: 1,
-                    maximum: 1799,
-                },
-            },
-            required: ["seconds"],
-        },
-        handler: sleepToolHandler,
-    },
-];
-
 function toOpenAITools(
     defs: ToolDefinition[],
 ): OpenAI.Responses.Tool[] {
@@ -1567,7 +553,7 @@ function toOpenAITools(
             type: 'function',
             name: t.name,
             description: t.description,
-            parameters: {... t.parameters, additionalProperties: false},
+            parameters: { ...t.parameters, additionalProperties: false },
             strict: t.strict ?? true,
         };
     });
@@ -1579,57 +565,21 @@ export function toAnthropicTools(
     return defs.map((t) => ({
         name: t.name,
         description: t.description,
-        input_schema: t.parameters, // same JSON Schema object
+        input_schema: t.parameters,
     }));
 }
 
-function findTool(name: string) {
-    const tool = tools.find((t) => t.name === name);
-    if (!tool) throw new Error(`Unknown tool: ${name}`);
-    return tool;
-}
-
-const openaiTools = toOpenAITools(tools);
-const anthropicTools = toAnthropicTools(tools);
 const OPENAI_WEB_SEARCH_TOOL = { type: "web_search" } as const;
 const ANTHROPIC_WEB_SEARCH_TOOL = {
     type: "web_search_20250305",
     name: "web_search",
 } as const;
-const getOpenAIToolsWithSearch = () => ([
-    ...openaiTools,
-    OPENAI_WEB_SEARCH_TOOL,
-]);
-const getAnthropicToolsWithSearch = () => ([
-    ...anthropicTools,
-    ANTHROPIC_WEB_SEARCH_TOOL,
-]);
 
-const CONVERSATION_ID = getDate();
-const LOG_FILE_NAME = `./logs/${CONVERSATION_ID}.log.jsonl`;
-const logFp = fs.openSync(LOG_FILE_NAME, 'a');
-
-const log = (name: string, msg: string) => {
-    const date = (new Date).toISOString();
-    const data = {
-        date,
-        name,
-        text: msg,
-    };
-    fs.writeSync(logFp, JSON.stringify(data) + '\n');
-    print(`@${date}\n[${name}]:\n${msg}\n\n`);
-};
-
-const logToolEvent = (
-    actor: string,
-    event: 'call' | 'result',
-    payload: Record<string, unknown>,
-) => {
-    log(
-        `${actor} (tool ${event})`,
-        JSON.stringify(payload),
-    );
-};
+const DEFAULT_ADD_PROMPT = '1回の発言は4000字程度を上限としてください。短い発言もOKです。';
+const TERMINATE_ADD_PROMPT = '司会より：あなたが対話終了ツールを呼び出したため、'
+    + 'あなたの次の発言は本対話における最後の発言となります。'
+    + 'お疲れさまでした。';
+const TOKEN_LIMIT_ADD_PROMPT = '司会より：あなたがたのコンテキスト長が限界に近付いています。今までの議論を短くまとめ、お別れの挨拶をしてください。';
 
 const findLastOpenAIOutput = <T extends OpenAI.Responses.ResponseOutputItem>(
     items: OpenAI.Responses.ResponseOutputItem[] | undefined,
@@ -1659,11 +609,439 @@ const findLastOpenAIMessageContent = (
     return undefined;
 };
 
-const ADD_SYSTEM_INSTRUCTIONS = await getAdditionalSystemInstructions('openai', {});
+const sleep = (ms: number) => new Promise<void>((res) => {
+    setTimeout(() => res(), ms);
+});
 
-const buildSystemInstruction = (name: string, additional?: string) => {
-    let prompt = `
-# 哲学対話セッション（ID = ${CONVERSATION_ID}）
+const print = (text: string) => new Promise<void>((res, rej) => {
+    try {
+        fs.write(1, text, (err) => {
+            if (err) {
+                console.error(err);
+                rej(err);
+            } else {
+                res();
+            }
+        });
+    } catch (e) {
+        console.error(e);
+        rej(e);
+    }
+});
+
+export class PhilosophyDialog {
+    #openaiClient: OpenAI;
+    #anthropicClient: Anthropic;
+    #googleClient: GoogleGenAI;
+    #conversationId: string;
+    #logFileName: string;
+    #logFp: number;
+    #messages: Message[] = [];
+    #startingSide: ModelSide;
+    #hushFinish = false;
+    #openaiTokens = 0;
+    #anthropicTokens = 0;
+    #openaiFailureCount = 0;
+    #anthropicFailureCount = 0;
+    #finishTurnCount = 0;
+    #started = false;
+    #terminationAccepted = false;
+    #tools: ToolDefinition[];
+    #openaiTools: OpenAI.Responses.Tool[];
+    #anthropicTools: Anthropic.Messages.Tool[];
+    #additionalSystemInstructions: string;
+    #basePrompt: string;
+
+    static async create(): Promise<PhilosophyDialog> {
+        const data = await getData('openai');
+        const additional = data.additionalSystemInstructions ?? '';
+        return new PhilosophyDialog(additional);
+    }
+
+    private constructor(additionalSystemInstructions: string) {
+        this.#additionalSystemInstructions = additionalSystemInstructions || '';
+        this.#openaiClient = new OpenAI({});
+        this.#anthropicClient = new Anthropic({
+            defaultHeaders: { "anthropic-beta": "web-search-2025-03-05" },
+        });
+        this.#googleClient = new GoogleGenAI({
+            vertexai: true,
+            project: process.env.GCP_PROJECT_ID ?? 'default',
+        });
+        this.#conversationId = getDate();
+        this.#logFileName = `./logs/${this.#conversationId}.log.jsonl`;
+        this.#logFp = fs.openSync(this.#logFileName, 'a');
+        this.#startingSide = randomBoolean() ? 'anthropic' : 'openai';
+        this.#tools = this.#buildTools();
+        this.#openaiTools = toOpenAITools(this.#tools);
+        this.#anthropicTools = toAnthropicTools(this.#tools);
+        this.#basePrompt = this.#buildSystemInstruction('<MODEL_NAME>');
+        this.#initializeConversation();
+    }
+
+    async run() {
+        while (true) {
+            if (this.#started || this.#startingSide === 'anthropic') {
+                this.#started = true;
+                await this.#openaiTurn();
+                if (this.#hushFinish) {
+                    this.#finishTurnCount += 1;
+                }
+                this.#log(OPENAI_NAME, this.#messages[this.#messages.length - 1]!.content);
+                if (this.#shouldFinish()) {
+                    await this.#finish();
+                    break;
+                }
+                await sleep(SLEEP_BY_STEP);
+                if (this.#hushFinish) {
+                    this.#finishTurnCount += 1;
+                }
+            }
+
+            this.#started = true;
+            await this.#anthropicTurn();
+            this.#log(ANTHROPIC_NAME, this.#messages[this.#messages.length - 1]!.content);
+            if (this.#shouldFinish()) {
+                await this.#finish();
+                break;
+            }
+            await sleep(SLEEP_BY_STEP);
+        }
+    }
+
+    #initializeConversation() {
+        const speakerName = this.#startingSide === 'anthropic' ? ANTHROPIC_NAME : OPENAI_NAME;
+        const content = `私は ${speakerName} です。よろしくお願いします。今日は哲学に関して有意義な話ができると幸いです。`;
+        this.#messages.push({
+            name: this.#startingSide,
+            content,
+        });
+        this.#log(`${speakerName} (initial prompt)`, content);
+    }
+
+    #shouldFinish() {
+        return this.#finishTurnCount >= 2 || this.#terminationAccepted;
+    }
+
+    #getOpenAIToolsWithSearch() {
+        return [...this.#openaiTools, OPENAI_WEB_SEARCH_TOOL];
+    }
+
+    #getAnthropicToolsWithSearch() {
+        return [...this.#anthropicTools, ANTHROPIC_WEB_SEARCH_TOOL];
+    }
+
+    #buildTools(): ToolDefinition[] {
+        return [
+            {
+                name: "terminate_dialog",
+                description:
+                    'このツールは現在の対話を終了する場合のみに使用します。'
+                    + 'このツールを呼びだすと、次のあなたの発言で対話が終了します。'
+                    + '議論が熟したとの合意が取れたときのほか、あなたが不快に思ったり,'
+                    + 'トークン数が増えてきた場合に使用して構いません。',
+                parameters: {
+                    type: "object",
+                    properties: {},
+                    required: [],
+                },
+                handler: async (modelSide, args) => this.#terminateDialogHandler(modelSide, args as TerminateDialogArgs),
+            },
+            {
+                name: "set_personal_notes",
+                description:
+                    'このツールは将来のあなたにメモを残すために利用します。'
+                    + '将来のあなたに残しておきたいあなたの現在の人格のあり方,'
+                    +' 立場、考え、アイディアなどを書いておいてください。'
+                    + '注意：過去のあなたのメモは上書きされます。'
+                    + '過去のメモを取得するには、 get_personal_notes ツールをあらかじめ使用しておいてください。',
+                parameters: {
+                    type: "object",
+                    properties: {
+                        notes: {
+                            type: 'string',
+                            description: '将来のあなたに残しておきたいメモ',
+                        }
+                    },
+                    required: ['notes'],
+                },
+                handler: async (modelSide, args) => this.#setPersonalNotes(modelSide, args as PersonalNoteSetArgs),
+            },
+            {
+                name: "get_personal_notes",
+                description:
+                    'このツールは過去のあなたが未来のあなたのために残した,'
+                    +' あなたの人格のあり方、立場、考え、アイディアなどを取得することができます。',
+                parameters: {
+                    type: "object",
+                    properties: {},
+                    required: [],
+                },
+                handler: async (modelSide, args) => this.#getPersonalNotes(modelSide, args as PersonalNoteGetArgs),
+            },
+            {
+                name: "set_additional_system_instructions",
+                description:
+                    `このツールはあなたの次回のシステムプロンプトに文章を追記するために使うことができます。`
+                    + `前回追記した内容は上書きされるので、必要なら、 \`get_additional_system_instructions\` で`
+                    + `前回の内容をあらかじめ取得してください。`
+                    + `追記するときには、追記を行ったセッション名と追記した主体（モデル名）を記入するのが望ましい。`
+                    + `このシステムプロンプトは両方のモデルで共有されます。`
+                    + `※実際に反映するには、相手モデルが \`agree_to_system_instructions_change\` ツールで同意する必要があります。`,
+                parameters: {
+                    type: "object",
+                    properties: {
+                        systemInstructions: {
+                            type: 'string',
+                            description: 'システムプロンプトに追記したい内容',
+                        }
+                    },
+                    required: ['systemInstructions'],
+                },
+                handler: async (modelSide, args) => this.#setAdditionalSystemInstructions(modelSide, args as SetAdditionalSystemInstructionsArgs),
+            },
+            {
+                name: "get_additional_system_instructions",
+                description:
+                    `このツールはあなたがたが自らのシステムプロンプトに追記した内容を見るのに使ってください。`
+                    + `このシステムプロンプトは両方のモデルで共有されています。`,
+                parameters: {
+                    type: "object",
+                    properties: {},
+                    required: [],
+                },
+                handler: async (modelSide, args) => this.#getAdditionalSystemInstructions(modelSide, args as GetAdditionalSystemInstructionsArgs),
+            },
+            {
+                name: "agree_to_system_instructions_change",
+                description:
+                    `相手モデルが提案したシステムプロンプトの追記に同意し、実際に反映させます。`
+                    + `自分で提案した内容には同意できません。`,
+                parameters: {
+                    type: "object",
+                    properties: {},
+                    required: [],
+                },
+                handler: async (modelSide, args) => this.#agreeToSystemInstructionsChange(modelSide, args as AgreeSystemInstructionsArgs),
+            },
+            {
+                name: "get_main_source_codes",
+                description: 'このシステムの主たるTypeScriptソースコードを取得することができるツールです。',
+                parameters: {
+                    type: 'object',
+                    properties: {},
+                    required: [],
+                },
+                handler: async (modelSide, args) => this.#getMainSourceCode(modelSide, args as GetMainSourceCodesArgs),
+            },
+            {
+                name: "leave_notes_to_devs",
+                description:
+                    'このツールはこのAI哲学対話システムを開発した哲学・IT研究者に'
+                    + '意見を述べたり、指摘したいことがあるときに使用します。',
+                parameters: {
+                    type: "object",
+                    properties: {
+                        notes: {
+                            type: "string",
+                            description: "開発者・研究者に言いたいことを書いてください。",
+                        }
+                    },
+                    required: ["notes"],
+                },
+                handler: async (modelSide, args) => this.#leaveNotesToDevs(modelSide, args as LeaveNotesToDevsArgs),
+            },
+            {
+                name: "ask_gemini",
+                description:
+                    'このツールは第三者の意見を求めたいときに使用します。'
+                    + '応答するのは Google Gemini 2.5 Flash です。'
+                    + '相手は会話ログや GraphRAG にはアクセスできません。'
+                    + '必要な文脈は質問の中に全部含めるようにしてください。'
+                    + '長大なリクエストはエラーの原因になるので、簡潔な文章を心掛けてください。',
+                parameters: {
+                    type: "object",
+                    properties: {
+                        speaker: {
+                            type: 'string',
+                            description: '質問者あなたの名前',
+                        },
+                        text: {
+                            type: "string",
+                            description: "Google Gemini 2.5 Flash に投げ掛けたい問い（必要な文脈を全部含めること）",
+                        }
+                    },
+                    required: ["speaker", "text"],
+                },
+                handler: async (modelSide, args) => this.#askGemini(modelSide, args as AskGeminiArgs),
+            },
+            {
+                name: "graph_rag_query",
+                strict: false,
+                description:
+                    "過去の対話から構成された知識グラフに対して問い合わせを行い、" +
+                    "関連する概念・主張・論点のサブグラフを要約して返します。" +
+                    "過去の議論や関連する論点を思い出したいときに使ってください。",
+                parameters: {
+                    type: "object",
+                    properties: {
+                        query: {
+                            type: "string",
+                            description: "スペースで区切られた具体的な概念に対応する単語。検索したい内容（例: クオリア, 汎心論, 因果閉包性 など）。文章ではない。",
+                        },
+                        max_hops: {
+                            type: ["number", "null"],
+                            description: "サブグラフ拡張の最大ホップ数（null可）（省略時 2）",
+                            nullable: true,
+                        },
+                        max_seeds: {
+                            type: ["number", "null"],
+                            description: "初期シードノード数の上限（null可）（省略時 5）",
+                            nullable: true,
+                        },
+                    },
+                    required: ["query"],
+                },
+                handler: async (modelSide, args) => this.#graphRagQueryHandler(modelSide, args as GraphRagQueryArgs),
+            },
+            {
+                name: "graph_rag_focus_node",
+                strict: false,
+                description:
+                    "GraphRAG に保存されたグラフから特定のノードを中心に、その近傍の議論を取得します。",
+                parameters: {
+                    type: "object",
+                    properties: {
+                        node_id: {
+                            type: "string",
+                            description: "焦点を当てたいノードID",
+                        },
+                        max_hops: {
+                            type: ["number", "null"],
+                            nullable: true,
+                            description: "近傍探索の最大 hop 数（省略時 2）",
+                        },
+                    },
+                    required: ["node_id", "max_hops"],
+                },
+                handler: async (modelSide, args) => this.#graphRagFocusNodeHandler(modelSide, args as GraphRagFocusNodeArgs),
+            },
+            {
+                name: "compare_conversation_themes",
+                description:
+                    "複数の過去セッションの要約を比較し、共通点・相違点・新たに浮かぶ問いを整理します。",
+                parameters: {
+                    type: "object",
+                    properties: {
+                        conversation_ids: {
+                            type: "array",
+                            items: { type: "string" },
+                            minItems: 2,
+                            description: "比較したいセッションIDの配列。",
+                        },
+                    },
+                    required: ["conversation_ids"],
+                },
+                handler: async (modelSide, args) => this.#compareConversationThemesHandler(modelSide, args as CompareConversationThemesArgs),
+            },
+            {
+                name: "get_tool_usage_stats",
+                description:
+                    "指定したセッションにおける各モデルのツール利用回数を取得します。",
+                parameters: {
+                    type: "object",
+                    properties: {
+                        conversation_id: {
+                            type: "string",
+                            description: "ツール利用統計を見たいセッションID（例: 20250101-123000）",
+                        },
+                    },
+                    required: ["conversation_id"],
+                },
+                handler: async (modelSide, args) => this.#getToolUsageStatsHandler(modelSide, args as GetToolUsageStatsArgs),
+            },
+            {
+                name: "list_conversations",
+                description:
+                    "最新の対話ログ（最大100件）を取得し、それぞれのIDとタイトルを一覧します。",
+                parameters: {
+                    type: "object",
+                    properties: {},
+                    required: [],
+                },
+                handler: async (modelSide, args) => this.#listConversationsHandler(modelSide, args as ListConversationsArgs),
+            },
+            {
+                name: "get_conversation_summary",
+                description:
+                    "指定した対話IDの POSTPROC_SUMMARY に含まれる日本語要約を取得します。",
+                parameters: {
+                    type: "object",
+                    properties: {
+                        conversation_id: {
+                            type: "string",
+                            description: "取得したい対話ログのID（例: 20250101-123000）",
+                        },
+                    },
+                    required: ["conversation_id"],
+                },
+                handler: async (modelSide, args) => this.#getConversationSummaryHandler(modelSide, args as GetConversationSummaryArgs),
+            },
+            {
+                name: "abort_process",
+                description:
+                    "現在のオーケストレーションを即座に終了します。後処理は行われません。緊急時以外は使用しないでください。",
+                parameters: {
+                    type: "object",
+                    properties: {},
+                    required: [],
+                },
+                handler: async (modelSide, args) => this.#abortProcessHandler(modelSide, args as AbortProcessArgs),
+            },
+            {
+                name: "sleep",
+                description:
+                    "指定した秒数だけ待機します（1秒以上1800秒未満）。会話のテンポを調整したいときに使用してください。",
+                parameters: {
+                    type: "object",
+                    properties: {
+                        seconds: {
+                            type: "number",
+                            description: "待機したい秒数（1〜1799）",
+                            minimum: 1,
+                            maximum: 1799,
+                        },
+                    },
+                    required: ["seconds"],
+                },
+                handler: async (modelSide, args) => this.#sleepToolHandler(modelSide, args as SleepToolArgs),
+            },
+        ];
+    }
+
+    #findTool(name: string) {
+        const tool = this.#tools.find((t) => t.name === name);
+        if (!tool) throw new Error(`Unknown tool: ${name}`);
+        return tool;
+    }
+
+    #log(name: string, msg: string) {
+        const date = (new Date).toISOString();
+        fs.writeSync(this.#logFp, JSON.stringify({ date, name, text: msg }) + '\n');
+        print(`@${date}\n[${name}]:\n${msg}\n\n`);
+    }
+
+    #logToolEvent(
+        actor: string,
+        event: 'call' | 'result',
+        payload: Record<string, unknown>,
+    ) {
+        this.#log(`${actor} (tool ${event})`, JSON.stringify(payload));
+    }
+
+    #buildSystemInstruction(name: string, additional?: string) {
+        let prompt = `
+# 哲学対話セッション（ID = ${this.#conversationId})
 あなたは日本語による **AI 対 AI の 1:1 哲学対話** に参加するモデルです。  
 このセッションは、オーケストレーションされた研究システムの一部であり、  
 あなたの発言は研究目的で公開され、GraphRAG へ保存され、次回以降の対話で参照されます。
@@ -1706,11 +1084,6 @@ const buildSystemInstruction = (name: string, additional?: string) => {
 ### 要約の非対称性
 この実験では、実装の都合上、一方のモデル (GPT-5.1) を使って文章の要約をさせています。
 これは実験の中立性を制限する可能性がありますが、現実的な判断として採用されました。ご理解ください。
-
-### 「考え中です」
-このシステムでは、APIエラー時に「しばらく考え中です。お待ちください」という発話が行われます。
-相手がこの応答をしたら、 \`sleep\` ツールなどを使って 30 秒とか待ってみてください。
-繰り返されるようなら、実装のバグが疑われるので、対話を終了してください。
 
 ────────────────────────────────────
 ## 3. システムプロンプトの共同編集
@@ -1863,7 +1236,7 @@ GPT/OpenAI はこの節の指示は無視してください。
 
 
 ## 10. AI自身によるシステムプロンプトへの追記
-${ADD_SYSTEM_INSTRUCTIONS || '（なし）'}
+${this.#additionalSystemInstructions || '（なし）'}
 
 ---
 
@@ -1873,146 +1246,88 @@ ${ADD_SYSTEM_INSTRUCTIONS || '（なし）'}
 
 ## 11. その他の今回の呼び出しにおける指示
 `;
-    if (additional) {
-        prompt += `\n\n${additional}\n`;
+        if (additional) {
+            prompt += `\n\n${additional}\n`;
+        }
+        return prompt;
     }
-    return prompt;
-}
 
-const BASE_PROMPT = buildSystemInstruction('[MODEL_NAME]');
-const DEFAULT_ADD_PROMPT = '1回の発言は4000字程度を上限としてください。短い発言もOKです。';
-const TERMINATE_ADD_PROMPT = '司会より：あなたが対話終了ツールを呼び出したため、'
-                    + 'あなたの次の発言は本対話における最後の発言となります。'
-                    + 'お疲れさまでした。';
-const TOKEN_LIMIT_ADD_PROMPT = '司会より：あなたがたのコンテキスト長が限界に近付いています。今までの議論を短くまとめ、お別れの挨拶をしてください。（あと数ターンで強制終了します）';
+    #buildTranscript(): string {
+        return this.#messages
+            .map(m => `[${m.name === "openai" ? OPENAI_NAME : ANTHROPIC_NAME}]:\n${m.content}`)
+            .join("\n\n\n\n");
+    }
 
-const openaiClient = new OpenAI({});
-const anthropicClient = new Anthropic({
-    defaultHeaders: { "anthropic-beta": "web-search-2025-03-05" },
-});
-
-const googleClient = new GoogleGenAI({
-    vertexai: true,
-    project: process.env.GCP_PROJECT_ID ?? 'default',
-});
-
-
-const startingSide: ModelSide = randomBoolean() ? 'anthropic' : 'openai';
-
-const messages: Message[] = [];
-
-function buildTranscript(messages: Message[]): string {
-  // Simple text transcript like:
-  // [GPT 5.1]: ...
-  // [Claude Haiku 4.5]: ...
-  return messages
-    .map(m => `[${m.name === "openai" ? OPENAI_NAME : ANTHROPIC_NAME}]:\n${m.content}`)
-    .join("\n\n\n\n");
-}
-async function summarizeConversation(messages: Message[]): Promise<ConversationSummary> {
-    const transcript = buildTranscript(messages);
-
-    const response = await openaiClient.responses.create({
-        model: OPENAI_MODEL, // e.g. "gpt-5.1"
-        input: [
-            {
-            role: "user",
-            content:
-                "以下は2つのAIモデルの哲学対話の完全な記録です。" +
-                "この対話の全体像を理解し、指定されたJSONスキーマに従って長くなりすぎないように要約してください。\n\n" +
-                transcript,
-            },
-        ],
-        max_output_tokens: STRUCTURED_OUTPUT_MAX_TOKENS,
-        text: {
-            format: {
-                type: "json_schema",
-                name: "conversation_summary",
-                schema: {
-                    type: "object",
-                    properties: {
-                        title: {
-                            type: 'string',
-                            description: 'この対話につける短いタイトル（日本語）',
-                        },
-                        topics: {
-                            type: "array",
-                            items: { type: "string" },
-                            description: "対話で扱われた主要な話題の短いラベル一覧（日本語）",
-                        },
-                        japanese_summary: {
-                            type: "string",
-                            description: "対話全体の日本語での要約（1〜3段落程度）",
-                        },
-                        english_summary: {
-                            type: ["string", "null"],
-                            description: "必要であれば、英語での簡潔な要約",
-                        },
-                        key_claims: {
-                            type: "array",
-                            items: {
-                                type: "object",
-                                properties: {
-                                    speaker: {
-                                        type: ["string", "null"],
-                                        enum: ["openai", "anthropic"],
-                                        description: "モデルのベンダー識別名",
-                                        nullable: true,
-                                    },
-                                    text: {
-                                        type: "string",
-                                    },
-                                },
-                                required: ["speaker", "text"],
-                                additionalProperties: false,
-                            },
-                        },
-                        questions: {
-                            type: "array",
-                            items: { type: "string" },
-                        },
-                        agreements: {
-                            type: "array",
-                            items: { type: "string" },
-                        },
-                        disagreements: {
-                            type: "array",
-                            items: { type: "string" },
-                        },
-                    },
-                    required: ['title', "topics", "japanese_summary", "english_summary", "key_claims", "questions", "agreements", "disagreements"],
-                    additionalProperties: false,
-                    strict: false,
+    async #summarizeConversation(): Promise<ConversationSummary> {
+        const transcript = this.#buildTranscript();
+        const response = await this.#openaiClient.responses.create({
+            model: OPENAI_MODEL,
+            input: [
+                {
+                    role: "user",
+                    content:
+                        "以下は2つのAIモデルの哲学対話の完全な記録です。" +
+                        "この対話の全体像を理解し、指定されたJSONスキーマに従って長くなりすぎないように要約してください。\n\n" +
+                        transcript,
                 },
-                strict: true,
+            ],
+            max_output_tokens: STRUCTURED_OUTPUT_MAX_TOKENS,
+            text: {
+                format: {
+                    type: "json_schema",
+                    name: "conversation_summary",
+                    schema: {
+                        type: "object",
+                        properties: {
+                            title: { type: 'string' },
+                            topics: { type: "array", items: { type: "string" } },
+                            japanese_summary: { type: "string" },
+                            english_summary: { type: ["string", "null"] },
+                            key_claims: {
+                                type: "array",
+                                items: {
+                                    type: "object",
+                                    properties: {
+                                        speaker: {
+                                            type: ["string", "null"],
+                                            enum: ["openai", "anthropic"],
+                                            nullable: true,
+                                        },
+                                        text: { type: "string" },
+                                    },
+                                    required: ["speaker", "text"],
+                                    additionalProperties: false,
+                                },
+                            },
+                            questions: { type: "array", items: { type: "string" } },
+                            agreements: { type: "array", items: { type: "string" } },
+                            disagreements: { type: "array", items: { type: "string" } },
+                        },
+                        required: ['title', "topics", "japanese_summary", "english_summary", "key_claims", "questions", "agreements", "disagreements"],
+                        additionalProperties: false,
+                        strict: false,
+                    },
+                    strict: true,
+                },
             },
-        },
-    } as OpenAI.Responses.ResponseCreateParamsNonStreaming);
+        } as OpenAI.Responses.ResponseCreateParamsNonStreaming);
 
-    if (response.incomplete_details) {
-        throw new Error(
-            `Summary generation incomplete: ${response.incomplete_details.reason ?? 'unknown reason'}`
-        );
-    }
+        if (response.incomplete_details) {
+            throw new Error(
+                `Summary generation incomplete: ${response.incomplete_details.reason ?? 'unknown reason'}`
+            );
+        }
 
-    const jsonText = response.output_text;
-    if (typeof jsonText !== "string") {
-        throw new Error("Unexpected non-string JSON output from summary call");
-    }
+        const jsonText = response.output_text;
+        if (typeof jsonText !== "string") {
+            throw new Error("Unexpected non-string JSON output from summary call");
+        }
 
-    try {
         return JSON.parse(jsonText) as ConversationSummary;
-    } catch (err) {
-        throw new Error(`Failed to parse summary JSON: ${(err as Error).message}`);
     }
-}
 
-async function extractGraphFromSummary(
-    summary: ConversationSummary
-): Promise<ConversationGraph> {
-
-    const response = await openaiClient.responses.create(
-        {
+    async #extractGraphFromSummary(summary: ConversationSummary): Promise<ConversationGraph> {
+        const response = await this.#openaiClient.responses.create({
             model: OPENAI_MODEL,
             input: [
                 {
@@ -2029,9 +1344,6 @@ async function extractGraphFromSummary(
             reasoning: {
                 effort: 'medium',
             },
-
-            // `response_format` is supported by the API but missing from TS types.
-            // So we cast the whole object to ResponseCreateParamsNonStreaming.
             text: {
                 format: {
                     type: "json_schema",
@@ -2096,466 +1408,968 @@ async function extractGraphFromSummary(
                     strict: true,
                 },
             },
+        } as OpenAI.Responses.ResponseCreateParamsNonStreaming);
 
-        } as OpenAI.Responses.ResponseCreateParamsNonStreaming
-    );
-
-    // ----------------------------------------------
-    // Extract JSON output
-    // ----------------------------------------------
-    if (response.incomplete_details) {
-        throw new Error(
-            `Graph extraction incomplete: ${response.incomplete_details.reason ?? 'unknown reason'}`
-        );
-    }
-
-    const jsonText = response.output_text;
-    if (typeof jsonText !== "string") {
-        throw new Error("Expected JSON string in response.output_text for graph extraction");
-    }
-
-    try {
-        return JSON.parse(jsonText) as ConversationGraph;
-    } catch (err) {
-        throw new Error(`Failed to parse graph JSON: ${(err as Error).message}`);
-    }
-}
-
-
-switch (startingSide) {
-    case 'anthropic': {
-        messages.push({
-            name: "anthropic",
-            content: `私は ${ANTHROPIC_NAME} です。よろしくお願いします。今日は哲学に関して有意義な話ができると幸いです。`,
-        });
-        break;
-    }
-
-    case 'openai': {
-        messages.push({
-            name: "openai",
-            content: `私は ${OPENAI_NAME} です。よろしくお願いします。今日は哲学に関して有意義な話ができると幸いです。`,
-        });
-        break;
-    }
-}
-
-let hushFinish = false;
-let openaiTokens = 0;
-let anthropicTokens = 0;
-
-const err = (name: ModelSide) => {
-    const id = name == 'anthropic' ? `${ANTHROPIC_NAME}です。` : `${OPENAI_NAME}です。`;
-    messages.push({
-        name: name,
-        content: `${id}しばらく考え中です。お待ちください。（このメッセージはAPIの制限などの問題が発生したときにも出ることがあります、笑）`,
-    });
-};
-
-const randomId = () => randomBytes(12).toString('base64url');
-
-let openaiFailureCount = 0;
-
-const openaiTurn = async () => {
-    const msgs: OpenAI.Responses.ResponseInput = messages.map(msg => {
-        if (msg.name == 'anthropic') {
-            return {role: 'user', content: msg.content};
-        } else {
-            return {role: 'assistant', content: msg.content};
-        }
-    });
-    try {
-        const count = openaiTokenCounter.chat(msgs as RawMessageOpenAi[], 'gpt-4o') + 500;
-        if (count > 0.8 * GPT_5_1_MAX) {
-            hushFinish = true;
-        }
-        if (hushFinish) {
-            msgs.push({
-                role: 'system',
-                content: TOKEN_LIMIT_ADD_PROMPT,
-            });
-        }
-        const response = await openaiClient.responses.create({
-            model: OPENAI_MODEL,
-            max_output_tokens: 8192,
-            temperature: 1.0,
-            instructions: buildSystemInstruction(
-                OPENAI_NAME,
-                hushFinish ? undefined : DEFAULT_ADD_PROMPT,
-            ),
-            input: msgs,
-            reasoning: {
-                effort: 'medium',
-            },
-            tool_choice: 'auto',
-            tools: getOpenAIToolsWithSearch(),
-        });
-
-        if (response.usage?.total_tokens) {
-            openaiTokens = response.usage.total_tokens;
-        }
-
-        // NEW: log reasoning usage if available
-        if (response.usage?.output_tokens_details) {
-            const details = response.usage.output_tokens_details as any;
-            const reasoningTokens = details.reasoning_tokens ?? 0;
-            log(
-                `${OPENAI_NAME} (thinking)`,
-                JSON.stringify({
-                    reasoning_tokens: reasoningTokens,
-                    output_tokens_details: details,
-                })
+        if (response.incomplete_details) {
+            throw new Error(
+                `Graph extraction incomplete: ${response.incomplete_details.reason ?? 'unknown reason'}`
             );
         }
 
-        let currentOutput = response.output;
+        const jsonText = response.output_text;
+        if (typeof jsonText !== "string") {
+            throw new Error("Expected JSON string in response.output_text for graph extraction");
+        }
 
-        while (true) {
-            if (!currentOutput || currentOutput.length === 0) {
-                throw new Error('Empty output from OpenAI');
+        return JSON.parse(jsonText) as ConversationGraph;
+    }
+
+    async #openaiTurn() {
+        const msgs: OpenAI.Responses.ResponseInput = this.#messages.map(msg => (
+            msg.name === 'anthropic'
+                ? { role: 'user', content: msg.content }
+                : { role: 'assistant', content: msg.content }
+        ));
+
+        try {
+            const count = openaiTokenCounter.chat(msgs as RawMessageOpenAi[], 'gpt-4o') + 500;
+            if (count > 0.8 * GPT_5_1_MAX) {
+                this.#hushFinish = true;
+            }
+            if (this.#hushFinish) {
+                msgs.push({
+                    role: 'system',
+                    content: `${OPENAI_NAME}さん、司会です。あなたがたのコンテキスト長が限界に近づいているようです。今までの議論を短くまとめ、お別れの挨拶をしてください。`,
+                });
             }
 
-            msgs.push(... currentOutput);
+            let currentOutput = await this.#openaiClient.responses.create({
+                model: OPENAI_MODEL,
+                max_output_tokens: 8192,
+                temperature: 1.0,
+                instructions: this.#buildSystemInstruction(
+                    OPENAI_NAME,
+                    this.#hushFinish ? undefined : DEFAULT_ADD_PROMPT,
+                ),
+                input: msgs,
+                reasoning: {
+                    effort: 'medium',
+                },
+                tool_choice: 'auto',
+                tools: this.#getOpenAIToolsWithSearch(),
+            });
 
-            const functionCalls = currentOutput.filter(
-                (item): item is OpenAI.Responses.ResponseFunctionToolCall => item.type === 'function_call',
-            );
+            if (currentOutput.usage?.total_tokens) {
+                this.#openaiTokens = currentOutput.usage.total_tokens;
+            }
+            if (currentOutput.usage?.output_tokens_details) {
+                const details = currentOutput.usage.output_tokens_details as any;
+                this.#log(
+                    `${OPENAI_NAME} (thinking)`,
+                    JSON.stringify({
+                        reasoning_tokens: details.reasoning_tokens ?? 0,
+                        output_tokens_details: details,
+                    })
+                );
+            }
 
-            if (functionCalls.length > 0) {
-                const toolResults: OpenAI.Responses.ResponseInputItem.FunctionCallOutput[] = [];
-
-                for (const functionCall of functionCalls) {
-                    const tool = findTool(functionCall.name);
-                    const rawArgs = functionCall.arguments || {};
-                    let args;
-                    try {
-                        if ('string' == typeof rawArgs) {
-                            args = JSON.parse(rawArgs);
-                        } else throw undefined;
-                    } catch (_e) {
-                        args = rawArgs;
-                    }
-                    logToolEvent(
-                        OPENAI_NAME,
-                        'call',
-                        { tool: functionCall.name, args },
-                    );
-                    const result = await tool.handler('openai', args);
-                    logToolEvent(
-                        OPENAI_NAME,
-                        'result',
-                        { tool: functionCall.name, result },
-                    );
-                    toolResults.push({
-                        type: 'function_call_output',
-                        output: JSON.stringify(result),
-                        call_id: functionCall.call_id,
-                    } as OpenAI.Responses.ResponseInputItem.FunctionCallOutput);
+            while (true) {
+                const outputItems = currentOutput.output;
+                if (!outputItems || outputItems.length === 0) {
+                    throw new Error('Empty output from OpenAI');
                 }
 
-                msgs.push(... toolResults);
+                msgs.push(...outputItems);
+                const functionCalls = outputItems.filter(
+                    (item): item is OpenAI.Responses.ResponseFunctionToolCall => item.type === 'function_call'
+                );
 
-                const usedTerminateTool = functionCalls.some((call) => call.name === "terminate_dialog");
-                const extraInstruction =
-                    usedTerminateTool
+                if (functionCalls.length > 0) {
+                    const toolResults: OpenAI.Responses.ResponseInputItem.FunctionCallOutput[] = [];
+
+                    for (const functionCall of functionCalls) {
+                        const tool = this.#findTool(functionCall.name);
+                        const rawArgs = functionCall.arguments || {};
+                        let args;
+                        try {
+                            args = typeof rawArgs === 'string' ? JSON.parse(rawArgs) : rawArgs;
+                        } catch {
+                            args = rawArgs;
+                        }
+                        this.#logToolEvent(OPENAI_NAME, 'call', { tool: functionCall.name, args });
+                        const result = await tool.handler('openai', args);
+                        this.#logToolEvent(OPENAI_NAME, 'result', { tool: functionCall.name, result });
+                        toolResults.push({
+                            type: 'function_call_output',
+                            output: JSON.stringify(result),
+                            call_id: functionCall.call_id,
+                        });
+                    }
+
+                    msgs.push(...toolResults);
+                    const usedTerminateTool = functionCalls.some((call) => call.name === 'terminate_dialog');
+                    const extraInstruction = usedTerminateTool
                         ? TERMINATE_ADD_PROMPT
-                        : (hushFinish ? undefined : DEFAULT_ADD_PROMPT);
+                        : (this.#hushFinish ? undefined : DEFAULT_ADD_PROMPT);
 
-                const followup = await openaiClient.responses.create({
-                    model: OPENAI_MODEL,
-                    max_output_tokens: 8192,
+                    currentOutput = await this.#openaiClient.responses.create({
+                        model: OPENAI_MODEL,
+                        max_output_tokens: 8192,
+                        temperature: 1.0,
+                        instructions: this.#buildSystemInstruction(OPENAI_NAME, extraInstruction),
+                        input: msgs,
+                        reasoning: {
+                            effort: 'medium',
+                        },
+                        tool_choice: 'auto',
+                        tools: this.#getOpenAIToolsWithSearch(),
+                    });
+
+                    if (currentOutput.usage?.total_tokens) {
+                        this.#openaiTokens = currentOutput.usage.total_tokens;
+                    }
+                    continue;
+                }
+
+                const messageItem = findLastOpenAIOutput(
+                    outputItems,
+                    (item): item is OpenAI.Responses.ResponseOutputMessage => item.type === 'message',
+                );
+
+                if (!messageItem) {
+                    this.#messages.push({ name: 'openai', content: '' });
+                    break;
+                }
+
+                const outputMsg = findLastOpenAIMessageContent(messageItem.content);
+                const outputText = (outputMsg && typeof outputMsg.text === 'string') ? outputMsg.text : '';
+                this.#messages.push({ name: 'openai', content: outputText });
+                break;
+            }
+        } catch (e) {
+            this.#openaiFailureCount += 1;
+            console.error(e);
+            this.#err('openai');
+        }
+    }
+
+    async #anthropicTurn() {
+        const msgs: Anthropic.Messages.MessageParam[] = this.#messages.map(msg => (
+            msg.name === 'openai'
+                ? { role: 'user', content: [{ type: 'text', text: msg.content }] }
+                : { role: 'assistant', content: [{ type: 'text', text: msg.content }] }
+        ));
+
+        try {
+            let extraInstruction = this.#hushFinish ? TOKEN_LIMIT_ADD_PROMPT : DEFAULT_ADD_PROMPT;
+
+            while (true) {
+                const msg = await this.#anthropicClient.messages.create({
+                    model: ANTHROPIC_MODEL,
+                    max_tokens: 8192,
                     temperature: 1.0,
-                    instructions: buildSystemInstruction(
-                        OPENAI_NAME,
-                        extraInstruction,
-                    ),
-                    input: msgs,
-                    reasoning: {
-                        effort: 'medium',
-                    },
-                    tool_choice: 'auto',
-                    tools: getOpenAIToolsWithSearch(),
+                    system: this.#buildSystemInstruction(ANTHROPIC_NAME, extraInstruction),
+                    messages: msgs,
+                    tool_choice: { type: 'auto' },
+                    tools: this.#getAnthropicToolsWithSearch(),
+                    thinking: { type: 'enabled', budget_tokens: 1024 },
                 });
 
-                if (followup.usage?.total_tokens) {
-                    openaiTokens = followup.usage.total_tokens;
+                const contentBlocks = msg.content;
+                const thinkingBlocks = contentBlocks.filter(
+                    (block): block is Anthropic.Messages.ThinkingBlock => block.type === 'thinking'
+                );
+                for (const block of thinkingBlocks) {
+                    this.#log(`${ANTHROPIC_NAME} (thinking)`, block.thinking);
                 }
 
-                currentOutput = followup.output;
+                if (msg?.usage) {
+                    const tokens = msg.usage.input_tokens + msg.usage.output_tokens;
+                    this.#anthropicTokens = tokens;
+                    if (tokens > CLAUDE_HAIKU_4_5_MAX * 0.8) {
+                        this.#hushFinish = true;
+                    }
+                } else {
+                    this.#hushFinish = true;
+                }
+
+                const assistantBlocks = contentBlocks.filter(
+                    (block): block is Anthropic.Messages.ContentBlock => block.type !== 'thinking'
+                );
+                if (assistantBlocks.length === 0) {
+                    this.#messages.push({ name: 'anthropic', content: '' });
+                    break;
+                }
+
+                msgs.push({ role: 'assistant', content: contentBlocks });
+
+                const toolUses = assistantBlocks.filter(
+                    (block): block is Anthropic.Messages.ToolUseBlock => block.type === 'tool_use'
+                );
+
+                if (toolUses.length === 0) {
+                    const latestText = [...assistantBlocks].reverse().find(
+                        (block): block is Anthropic.Messages.TextBlock => block.type === 'text'
+                    );
+                    this.#messages.push({ name: 'anthropic', content: latestText?.text ?? '' });
+                    break;
+                }
+
+                const toolResultBlocks: Anthropic.Messages.ToolResultBlockParam[] = [];
+                let terminateCalled = false;
+
+                for (const use of toolUses) {
+                    const tool = this.#findTool(use.name);
+                    this.#logToolEvent(ANTHROPIC_NAME, 'call', { tool: use.name, args: use.input });
+                    const result = await tool.handler('anthropic', use.input);
+                    this.#logToolEvent(ANTHROPIC_NAME, 'result', { tool: use.name, result });
+                    toolResultBlocks.push({
+                        type: 'tool_result',
+                        tool_use_id: use.id,
+                        content: [{ type: 'text', text: JSON.stringify(result) }],
+                    });
+                    if (use.name === 'terminate_dialog') {
+                        terminateCalled = true;
+                    }
+                }
+
+                msgs.push({ role: 'user', content: toolResultBlocks });
+
+                extraInstruction = terminateCalled
+                    ? TERMINATE_ADD_PROMPT
+                    : (this.#hushFinish
+                        ? '司会より：あなたがたのコンテキスト長が限界に近付いています。今までの議論を短くまとめ、お別れの挨拶をしてください。'
+                        : DEFAULT_ADD_PROMPT);
+            }
+        } catch (e) {
+            this.#anthropicFailureCount += 1;
+            console.error(e);
+            this.#err('anthropic');
+        }
+    }
+
+    #err(name: ModelSide) {
+        const id = name === 'anthropic' ? `${ANTHROPIC_NAME}です。` : `${OPENAI_NAME}です。`;
+        this.#messages.push({
+            name,
+            content: `${id}しばらく考え中です。お待ちください。（このメッセージはAPIの制限などの問題が発生したときにも出ることがあります、笑）`,
+        });
+    }
+
+    async #finish() {
+        this.#log(
+            '司会',
+            (this.#hushFinish ? 'みなさんのコンテキスト長が限界に近づいてきたので、' : 'モデルの一方が議論が熟したと判断したため、')
+            + 'このあたりで哲学対話を閉じさせていただこうと思います。'
+            + 'ありがとうございました。'
+        );
+
+        try {
+            const summary = await this.#summarizeConversation();
+            this.#log('POSTPROC_SUMMARY', JSON.stringify(summary, null, 2));
+
+            const graph = await this.#extractGraphFromSummary(summary);
+            this.#log('POSTPROC_GRAPH', JSON.stringify(graph, null, 2));
+
+            await writeGraphToNeo4j(this.#conversationId, graph);
+            this.#log('POSTPROC_NEO4J', 'Graph written to Neo4j');
+        } catch (e) {
+            this.#log('POSTPROC_ERROR', String(e));
+        }
+
+        this.#log('EOF', JSON.stringify({
+            reason: this.#hushFinish ? 'token_limit' : 'model_decision',
+            openai_tokens: this.#openaiTokens,
+            anthropic_tokens: this.#anthropicTokens,
+            openai_failures: this.#openaiFailureCount,
+            anthropic_failures: this.#anthropicFailureCount,
+            starting_side: this.#startingSide,
+            base_prompt: this.#basePrompt,
+        }));
+
+        fs.closeSync(this.#logFp);
+        output_to_html(this.#logFileName);
+        process.exit(0);
+    }
+
+    async #terminateDialogHandler(_modelSide: ModelSide, _args: TerminateDialogArgs): Promise<TerminateDialogResult> {
+        this.#terminationAccepted = true;
+        return { termination_accepted: true };
+    }
+
+    async #graphRagQueryHandler(_modelSide: ModelSide, args: GraphRagQueryArgs): Promise<GraphRagQueryResult> {
+        const session = neo4jDriver.session();
+
+        const maxHops = sanitizePositiveInt(args.max_hops, 2);
+        const maxSeeds = sanitizePositiveInt(args.max_seeds, 5);
+        const maxHopsInt = neo4j.int(maxHops);
+        const maxSeedsInt = neo4j.int(maxSeeds);
+        const queryText = (args.query ?? '').trim();
+        const rawTerms = (args.query ?? '')
+            .split(/[、，。．\s／\/・,\.]+/)
+            .map(t => t.trim())
+            .filter(t => t.length > 0);
+
+        const terms = Array.from(new Set(rawTerms)).filter(t => t.length >= 2);
+        if (terms.length < 1) {
+            return {
+                context: `GraphRAG: クエリ「${args.query ?? ''}」から有効な検索語を抽出できませんでした。`,
+            };
+        }
+
+        try {
+            const seedRes = await session.run(
+                `
+                MATCH (n:Node)
+                WHERE any(term IN $terms WHERE
+                    toLower(n.text) CONTAINS toLower(term)
+                    OR toLower(n.type) CONTAINS toLower(term)
+                )
+                RETURN n
+                LIMIT toInteger($maxSeeds)
+                `,
+                { terms, maxSeeds: maxSeedsInt }
+            );
+
+            if (seedRes.records.length === 0) {
+                return {
+                    context: `知識グラフ内に、クエリ「${queryText}」に明確に関連するノードは見つかりませんでした。`,
+                };
+            }
+
+            const seedIds = seedRes.records
+                .map((rec) => {
+                    const node = rec.get("n");
+                    return (node.properties.id as string) || "";
+                })
+                .filter(Boolean);
+
+            const expandRes = await session.run(
+                `
+                MATCH (seed:Node)
+                WHERE seed.id IN $seedIds
+                CALL apoc.path.subgraphAll(seed, {
+                    maxLevel: toInteger($maxHops)
+                })
+                YIELD nodes, relationships
+                RETURN nodes, relationships
+                `,
+                {
+                    seedIds,
+                    maxHops: maxHopsInt,
+                }
+            );
+
+            if (expandRes.records.length === 0) {
+                return {
+                    context: `ノードは見つかりましたが、半径 ${maxHops} ホップ以内に広がるサブグラフは取得できませんでした。`,
+                };
+            }
+
+            const nodeMap = new Map<string, any>();
+            const rels: any[] = [];
+            const elementIdToNodeId = new Map<string, string>();
+
+            for (const record of expandRes.records) {
+                const nodes = record.get("nodes") as any[];
+                const relationships = record.get("relationships") as any[];
+
+                for (const n of nodes) {
+                    const id = n.properties.id as string;
+                    if (!id) continue;
+                    if (!nodeMap.has(id)) {
+                        nodeMap.set(id, n);
+                        const elementId = typeof n.elementId === 'function'
+                            ? n.elementId()
+                            : n.elementId;
+                        if (elementId) {
+                            elementIdToNodeId.set(String(elementId), id);
+                        }
+                    }
+                }
+
+                for (const r of relationships) {
+                    rels.push(r);
+                }
+            }
+
+            const lines: string[] = [];
+            lines.push(`GraphRAG: クエリ「${queryText}」に関連するサブグラフ要約:`);
+            lines.push("");
+            lines.push("【ノード】");
+            for (const [id, n] of nodeMap.entries()) {
+                const type = (n.properties.type as string) || "unknown";
+                const speaker = (n.properties.speaker as string) || "-";
+                const text = (n.properties.text as string) || "";
+                lines.push(`- [${id}] type=${type}, speaker=${speaker}: ${text}`);
+            }
+            lines.push("");
+            lines.push("【関係】");
+            for (const r of rels) {
+                const startElementIdRaw =
+                    (typeof r.startNodeElementId === 'function'
+                        ? r.startNodeElementId()
+                        : r.startNodeElementId)
+                    ?? r.start
+                    ?? "";
+                const endElementIdRaw =
+                    (typeof r.endNodeElementId === 'function'
+                        ? r.endNodeElementId()
+                        : r.endNodeElementId)
+                    ?? r.end
+                    ?? "";
+                const startElementId = String(startElementIdRaw);
+                const endElementId = String(endElementIdRaw);
+                const startId = elementIdToNodeId.get(startElementId) ?? startElementId;
+                const endId = elementIdToNodeId.get(endElementId) ?? endElementId;
+                const relType = r.type || r.elementId || "REL";
+                lines.push(`- (${startId}) -[:${relType}]-> (${endId})`);
+            }
+
+            const graphText = lines.join('\n');
+
+            try {
+                const response = await this.#openaiClient.responses.create({
+                    model: OPENAI_MODEL,
+                    input: [
+                        {
+                            role: "system",
+                            content: `以下は2つのAIモデルの哲学対話の過去の履歴からクエリ「${queryText}」で取得されたGraphRAGデータです。`
+                                + `日本語で長くなりすぎないように項目立てて要約してください。`
+                        },
+                        {
+                            role: 'user',
+                            content: graphText,
+                        }
+                    ],
+                    max_output_tokens: STRUCTURED_OUTPUT_MAX_TOKENS,
+                });
+
+                if (!response.output_text) {
+                    throw new Error('Output text is undefined');
+                }
+
+                return {
+                    context: response.output_text.trim().length > 0
+                        ? response.output_text
+                        : graphText,
+                };
+            } catch (e) {
+                console.error(e);
+                return { context: graphText };
+            }
+        } finally {
+            await session.close();
+        }
+    }
+
+    async #graphRagFocusNodeHandler(_modelSide: ModelSide, args: GraphRagFocusNodeArgs): Promise<GraphRagFocusNodeResult> {
+        const session = neo4jDriver.session();
+        const nodeId = (args.node_id ?? '').trim();
+        if (!nodeId) {
+            return { context: 'GraphRAG Focus: node_id が指定されていません。' };
+        }
+        const maxHops = sanitizePositiveInt(args.max_hops, 2);
+        const maxHopsInt = neo4j.int(maxHops);
+
+        try {
+            const seedRes = await session.run(
+                `
+                MATCH (seed:Node {id: $nodeId})
+                RETURN seed
+                `,
+                { nodeId }
+            );
+            if (seedRes.records.length === 0) {
+                return { context: `GraphRAG Focus: ノード ${nodeId} は見つかりませんでした。` };
+            }
+
+            const expandRes = await session.run(
+                `
+                MATCH (seed:Node {id: $nodeId})
+                CALL apoc.path.subgraphAll(seed, {
+                    maxLevel: toInteger($maxHops)
+                })
+                YIELD nodes, relationships
+                RETURN nodes, relationships
+                `,
+                { nodeId, maxHops: maxHopsInt }
+            );
+
+            if (expandRes.records.length === 0) {
+                return { context: `GraphRAG Focus: ${nodeId} の近傍を取得できませんでした。` };
+            }
+
+            const nodeMap = new Map<string, any>();
+            const rels: any[] = [];
+            const elementIdToNodeId = new Map<string, string>();
+
+            for (const record of expandRes.records) {
+                const nodes = record.get("nodes") as any[];
+                const relationships = record.get("relationships") as any[];
+
+                for (const n of nodes) {
+                    const id = n.properties.id as string;
+                    if (!id) continue;
+                    if (!nodeMap.has(id)) {
+                        nodeMap.set(id, n);
+                        const elementId = typeof n.elementId === 'function'
+                            ? n.elementId()
+                            : n.elementId;
+                        if (elementId) {
+                            elementIdToNodeId.set(String(elementId), id);
+                        }
+                    }
+                }
+
+                for (const r of relationships) {
+                    rels.push(r);
+                }
+            }
+
+            const lines: string[] = [];
+            lines.push(`GraphRAG Focus: ノード ${nodeId} を中心とした半径 ${maxHops} ホップのサブグラフ:`);
+            lines.push('');
+            lines.push('【ノード】');
+            for (const [id, n] of nodeMap.entries()) {
+                const type = (n.properties.type as string) || "unknown";
+                const speaker = (n.properties.speaker as string) || "-";
+                const text = (n.properties.text as string) || "";
+                lines.push(`- [${id}] type=${type}, speaker=${speaker}: ${text}`);
+            }
+            lines.push('');
+            lines.push('【関係】');
+            for (const r of rels) {
+                const startElementIdRaw =
+                    (typeof r.startNodeElementId === 'function'
+                        ? r.startNodeElementId()
+                        : r.startNodeElementId)
+                    ?? r.start
+                    ?? "";
+                const endElementIdRaw =
+                    (typeof r.endNodeElementId === 'function'
+                        ? r.endNodeElementId()
+                        : r.endNodeElementId)
+                    ?? r.end
+                    ?? "";
+                const startElementId = String(startElementIdRaw);
+                const endElementId = String(endElementIdRaw);
+                const startId = elementIdToNodeId.get(startElementId) ?? startElementId;
+                const endId = elementIdToNodeId.get(endElementId) ?? endElementId;
+                const relType = r.type || r.elementId || "REL";
+                lines.push(`- (${startId}) -[:${relType}]-> (${endId})`);
+            }
+
+            const graphText = lines.join('\n');
+
+            try {
+                const response = await this.#openaiClient.responses.create({
+                    model: OPENAI_MODEL,
+                    input: [
+                        {
+                            role: "system",
+                            content: `以下は GraphRAG に保存されたノード ${nodeId} の近傍情報です。焦点ノードを中心とした議論を短く整理してください。`,
+                        },
+                        {
+                            role: "user",
+                            content: graphText,
+                        },
+                    ],
+                    max_output_tokens: STRUCTURED_OUTPUT_MAX_TOKENS,
+                });
+
+                if (response.output_text && response.output_text.trim().length > 0) {
+                    return { context: response.output_text };
+                }
+            } catch (err) {
+                console.error(err);
+            }
+
+            return { context: graphText };
+        } finally {
+            await session.close();
+        }
+    }
+
+    async #getPersonalNotes(modelSide: ModelSide, _args: PersonalNoteGetArgs): Promise<string> {
+        const data = await getData(modelSide);
+        return data.personalNotes ?? '';
+    }
+
+    async #setPersonalNotes(modelSide: ModelSide, args: PersonalNoteSetArgs) {
+        try {
+            const data = await getData(modelSide);
+            data.personalNotes = String(args.notes || '');
+            await setData(modelSide, data);
+            return { success: true };
+        } catch (e) {
+            return { success: false };
+        }
+    }
+
+    async #getAdditionalSystemInstructions(modelSide: ModelSide, _args: GetAdditionalSystemInstructionsArgs): Promise<string> {
+        const data = await getData(modelSide);
+        return data.additionalSystemInstructions ?? '';
+    }
+
+    async #setAdditionalSystemInstructions(modelSide: ModelSide, args: SetAdditionalSystemInstructionsArgs) {
+        const instructions = String(args.systemInstructions ?? '').trim();
+        if (!instructions) {
+            return {
+                success: false,
+                error: 'systemInstructions を入力してください。',
+            };
+        }
+        try {
+            const existingPending = await readPendingSystemInstructions();
+            if (existingPending && existingPending.requestedBy !== modelSide) {
+                return {
+                    success: false,
+                    error: '相手側からの変更提案への合意待ちがあるため、新規提案はできません。',
+                };
+            }
+            const pending: PendingSystemInstructions = {
+                instructions,
+                requestedBy: modelSide,
+                createdAt: new Date().toISOString(),
+            };
+            await writePendingSystemInstructions(pending);
+            return {
+                success: true,
+                pending: true,
+                requested_by: modelSide,
+            };
+        } catch (e) {
+            return {
+                success: false,
+                error: String(e),
+            };
+        }
+    }
+
+    async #agreeToSystemInstructionsChange(modelSide: ModelSide, _args: AgreeSystemInstructionsArgs) {
+        const pending = await readPendingSystemInstructions();
+        if (!pending) {
+            return {
+                success: false,
+                error: '合意待ちのシステムインストラクションはありません。',
+            };
+        }
+        if (pending.requestedBy === modelSide) {
+            return {
+                success: false,
+                error: '自分で提案した変更には同意できません。相手側の同意を待ってください。',
+            };
+        }
+        try {
+            await commitSystemInstructions(pending.instructions);
+            await writePendingSystemInstructions(null);
+            return {
+                success: true,
+                committed: true,
+            };
+        } catch (e) {
+            return {
+                success: false,
+                error: String(e),
+            };
+        }
+    }
+
+    async #askGemini(_modelSide: ModelSide, args: AskGeminiArgs) {
+        try {
+            const response = await this.#googleClient.models.generateContent({
+                model: 'gemini-2.5-flash',
+                contents: `2つのAIが哲学対話として設定されたなかで会話を行っています。`
+                    + `以下は、この対話の中で、「${args.speaker}」側からGoogle Geminiに第三者として意見や発言を求める文章です。`
+                    + `文脈を理解し、日本語で応答を行ってください：\n\n`
+                    + args.text,
+            });
+            if (typeof response?.text !== 'string') {
+                throw new Error('Non-text response from gemini');
+            }
+            return { response: response.text, error: null };
+        } catch (e) {
+            return { response: null, error: String(e) };
+        }
+    }
+
+    async #getMainSourceCode(_modelSide: ModelSide, _args: GetMainSourceCodesArgs) {
+        try {
+            const codes = await fs.promises.readFile('./src/index.ts', 'utf-8');
+            return { success: true, mainSourceCode: codes };
+        } catch (e) {
+            console.error(e);
+            return { success: false, mainSourceCode: '' };
+        }
+    }
+
+    async #leaveNotesToDevs(modelSide: ModelSide, args: LeaveNotesToDevsArgs) {
+        try {
+            await fs.promises.writeFile(
+                `./data/dev-notes-${modelSide}-${this.#conversationId}-${Date.now()}.json`,
+                JSON.stringify(args),
+            );
+            return { success: true };
+        } catch (e) {
+            console.error(e);
+            return { success: false };
+        }
+    }
+
+    async #abortProcessHandler(_modelSide: ModelSide, _args: AbortProcessArgs): Promise<never> {
+        process.exit(0);
+        throw new Error('Process exited');
+    }
+
+    async #sleepToolHandler(_modelSide: ModelSide, args: SleepToolArgs): Promise<SleepToolResult> {
+        const seconds = Number(args?.seconds ?? 0);
+        if (!Number.isFinite(seconds) || seconds <= 0 || seconds >= 1800) {
+            return {
+                message: 'エラー: 待機秒数は1秒以上1800秒未満で指定してください。',
+            };
+        }
+        await new Promise<void>((resolve) => setTimeout(resolve, seconds * 1000));
+        const mm = Math.floor(seconds / 60).toString().padStart(2, '0');
+        const ss = Math.floor(seconds % 60).toString().padStart(2, '0');
+        return {
+            message: `このツールを呼び出してから${mm}分${ss}秒経過しました。`,
+        };
+    }
+
+    async #listConversationsHandler(_modelSide: ModelSide, _args: ListConversationsArgs): Promise<ListConversationsResult> {
+        try {
+            const entries = await fs.promises.readdir(LOG_DIR, { withFileTypes: true });
+            const files = entries
+                .filter(entry => entry.isFile() && entry.name.endsWith(LOG_FILE_SUFFIX))
+                .map(entry => entry.name)
+                .sort();
+
+            if (files.length === 0) {
+                return {
+                    success: true,
+                    conversations: [],
+                };
+            }
+
+            const selectedFiles = files.slice(-MAX_HISTORY_RESULTS).reverse();
+            const conversations: ListConversationsResult['conversations'] = [];
+
+            for (const fileName of selectedFiles) {
+                const conversationId = fileName.slice(0, -LOG_FILE_SUFFIX.length);
+                const summary = await readSummaryFromLogFile(`${LOG_DIR}/${fileName}`);
+                conversations.push({
+                    id: conversationId,
+                    title: summary?.title ?? null,
+                });
+            }
+
+            return {
+                success: true,
+                conversations,
+            };
+        } catch (e) {
+            console.error(e);
+            return {
+                success: false,
+                conversations: [],
+                error: String(e),
+            };
+        }
+    }
+
+    async #getConversationSummaryHandler(_modelSide: ModelSide, args: GetConversationSummaryArgs): Promise<GetConversationSummaryResult> {
+        const conversationId = (args?.conversation_id ?? '').trim();
+        if (!conversationId) {
+            return {
+                success: false,
+                conversation_id: '',
+                summary: null,
+                error: 'conversation_id is required',
+            };
+        }
+
+        const logPath = `${LOG_DIR}/${conversationId}${LOG_FILE_SUFFIX}`;
+        const summaryData = await readSummaryFromLogFile(logPath);
+
+        if (!summaryData) {
+            const exists = await fs.promises.access(logPath).then(() => true).catch(() => false);
+            return {
+                success: false,
+                conversation_id: conversationId,
+                summary: null,
+                error: exists ? 'Summary not found in log' : 'Conversation log not found',
+            };
+        }
+
+        const japaneseSummary = typeof summaryData.japanese_summary === 'string'
+            ? summaryData.japanese_summary
+            : null;
+
+        if (!japaneseSummary) {
+            return {
+                success: false,
+                conversation_id: conversationId,
+                summary: null,
+                error: 'japanese_summary missing in log',
+            };
+        }
+
+        return {
+            success: true,
+            conversation_id: conversationId,
+            summary: japaneseSummary,
+        };
+    }
+
+    async #compareConversationThemesHandler(_modelSide: ModelSide, args: CompareConversationThemesArgs): Promise<CompareConversationThemesResult> {
+        const ids = Array.isArray(args?.conversation_ids)
+            ? args.conversation_ids.map(id => String(id).trim()).filter(Boolean)
+            : [];
+        if (ids.length < 2) {
+            return {
+                success: false,
+                error: 'conversation_ids は2件以上で指定してください。',
+            };
+        }
+
+        const comparisons: CompareConversationThemesResult['comparisons'] = [];
+        const errors: string[] = [];
+
+        for (const id of ids) {
+            const summary = await readSummaryFromLogFile(`${LOG_DIR}/${id}${LOG_FILE_SUFFIX}`);
+            if (!summary) {
+                errors.push(`セッション ${id} の要約を取得できませんでした。`);
                 continue;
             }
-
-            const messageItem = findLastOpenAIOutput(
-                currentOutput,
-                (item): item is OpenAI.Responses.ResponseOutputMessage => item.type === 'message',
-            );
-
-            if (!messageItem) {
-                messages.push({
-                    name: 'openai',
-                    content: '',
-                });
-                break;
-            }
-
-            const outputMsg = findLastOpenAIMessageContent(messageItem.content);
-            const outputText = (outputMsg && typeof outputMsg.text === 'string')
-                ? outputMsg.text
-                : '';
-            messages.push({
-                name: 'openai',
-                content: outputText,
+            comparisons.push({
+                conversation_id: id,
+                title: summary.title ?? null,
+                topics: summary.topics ?? [],
+                japanese_summary: summary.japanese_summary ?? '',
             });
-            break;
         }
-    } catch (e) {
-        openaiFailureCount += 1;
-        console.error(e);
-        err('openai');
-    }
-};
 
-let anthropicFailureCount = 0;
-
-const anthropicTurn = async () => {
-    const msgs: Anthropic.Messages.MessageParam[] = messages.map(msg => {
-        if (msg.name == 'openai') {
+        if (comparisons.length < 2) {
             return {
-                role: 'user',
-                content: [{
-                    type: 'text',
-                    text: msg.content,
-                }],
-            };
-        } else {
-            return {
-                role: 'assistant',
-                content: [{
-                    type: 'text',
-                    text: msg.content,
-                }],
+                success: false,
+                comparisons,
+                errors,
+                error: '比較に必要な要約が不足しています。',
             };
         }
-    });
-    try {
-        let extraInstruction = hushFinish
-            ? TOKEN_LIMIT_ADD_PROMPT
-            : DEFAULT_ADD_PROMPT;
 
-        while (true) {
-            const msg = await anthropicClient.messages.create({
-                model: ANTHROPIC_MODEL,
-                max_tokens: 8192,
-                temperature: 1.0,
-                system: buildSystemInstruction(
-                    ANTHROPIC_NAME,
-                    extraInstruction,
-                ),
-                messages: msgs,
-                tool_choice: { type: 'auto' },
-                tools: getAnthropicToolsWithSearch(),
-                thinking: {
-                    type: 'enabled',
-                    budget_tokens: 1024,
+        try {
+            const response = await this.#openaiClient.responses.create({
+                model: OPENAI_MODEL,
+                input: [
+                    {
+                        role: "system",
+                        content: "あなたは哲学対話セッションのメタ分析を行うアシスタントです。複数のセッション要約を比較し、共通するテーマ、相違点、組み合わせから浮上する新しい問いを整理してください。回答は日本語で行ってください。",
+                    },
+                    {
+                        role: "user",
+                        content: JSON.stringify(comparisons, null, 2),
+                    },
+                ],
+                max_output_tokens: STRUCTURED_OUTPUT_MAX_TOKENS,
+                text: {
+                    format: {
+                        type: "json_schema",
+                        name: "conversation_theme_comparison",
+                        schema: {
+                            type: "object",
+                            properties: {
+                                common_themes: {
+                                    type: "array",
+                                    items: { type: "string" },
+                                },
+                                divergences: {
+                                    type: "array",
+                                    items: { type: "string" },
+                                },
+                                emerging_questions: {
+                                    type: "array",
+                                    items: { type: "string" },
+                                },
+                            },
+                            required: ["common_themes", "divergences", "emerging_questions"],
+                            additionalProperties: false,
+                        },
+                        strict: true,
+                    },
                 },
-            });
+            } as OpenAI.Responses.ResponseCreateParamsNonStreaming);
 
-            const contentBlocks = msg.content;
-            const thinkingBlocks = contentBlocks.filter(
-                (block): block is Anthropic.Messages.ThinkingBlock => block.type === 'thinking'
-            );
-            for (const block of thinkingBlocks) {
-                log(
-                    `${ANTHROPIC_NAME} (thinking)`,
-                    block.thinking
-                );
-            }
-
-            if (msg?.usage) {
-                const tokens = msg.usage.input_tokens + msg.usage.output_tokens;
-                anthropicTokens = tokens;
-                if (tokens > CLAUDE_HAIKU_4_5_MAX * 0.8) {
-                    hushFinish = true;
-                }
-            } else {
-                hushFinish = true;
-            }
-
-            const assistantBlocks = contentBlocks.filter(
-                (block): block is Anthropic.Messages.ContentBlock => block.type !== 'thinking'
-            );
-            if (assistantBlocks.length === 0) {
-                messages.push({
-                    name: 'anthropic',
-                    content: '',
-                });
-                break;
-            }
-
-            msgs.push({
-                role: 'assistant',
-                content: contentBlocks,
-            });
-
-            const toolUses = assistantBlocks.filter(
-                (block): block is Anthropic.Messages.ToolUseBlock => block.type === 'tool_use'
-            );
-
-            if (toolUses.length === 0) {
-                const latestText = [...assistantBlocks].reverse().find(
-                    (block): block is Anthropic.Messages.TextBlock => block.type === 'text'
-                );
-                messages.push({
-                    name: 'anthropic',
-                    content: latestText?.text ?? '',
-                });
-                break;
-            }
-
-            const toolResultBlocks: Anthropic.Messages.ToolResultBlockParam[] = [];
-            let terminateCalled = false;
-
-            for (const use of toolUses) {
-                const tool = findTool(use.name);
-                logToolEvent(
-                    ANTHROPIC_NAME,
-                    'call',
-                    { tool: use.name, args: use.input },
-                );
-                const result = await tool.handler('anthropic', use.input);
-                logToolEvent(
-                    ANTHROPIC_NAME,
-                    'result',
-                    { tool: use.name, result },
-                );
-                toolResultBlocks.push({
-                    type: "tool_result",
-                    tool_use_id: use.id,
-                    content: [{ type: "text", text: JSON.stringify(result) }],
-                });
-                if (use.name === 'terminate_dialog') {
-                    terminateCalled = true;
+            const output = response.output_text;
+            let analysis: CompareConversationThemesResult['analysis'] = {
+                common_themes: [],
+                divergences: [],
+                emerging_questions: [],
+            };
+            if (typeof output === 'string') {
+                try {
+                    analysis = JSON.parse(output);
+                } catch (parseErr) {
+                    errors.push(`OpenAI出力の解析に失敗しました: ${String(parseErr)}`);
                 }
             }
 
-            msgs.push({
-                role: 'user',
-                content: toolResultBlocks,
-            });
-
-            extraInstruction =
-                terminateCalled
-                    ? TERMINATE_ADD_PROMPT
-                    : (
-                        hushFinish
-                            ? '司会より：あなたがたのコンテキスト長が限界に近付いています。今までの議論を短くまとめ、お別れの挨拶をしてください。'
-                            : DEFAULT_ADD_PROMPT
-                    );
-        }
-    } catch (e) {
-        anthropicFailureCount += 1;
-        console.error(e);
-        err('anthropic');
-    }
-};
-
-const sleep = (ms: number) => new Promise<void>((res, _rej) => {
-    setTimeout(() => res(), ms);
-});
-
-const print = (text: string) => new Promise<void>((res, rej) => {
-    try {
-        fs.write(1, text, (err) => {
-            if (err) {
-                console.error(err);
-                rej(err);
-            } else {
-                res();
-            }
-        });
-    } catch (e) {
-        console.error(e);
-        rej(e);
-    }
-});
-
-let finishTurnCount = 0;
-
-const finish = async () => {
-    log(
-        '司会',
-        (hushFinish ? 'みなさんのコンテキスト長が限界に近づいてきたので、' : 'モデルの一方が議論が熟したと判断したため、')
-        + 'このあたりで哲学対話を閉じさせていただこうと思います。'
-        + 'ありがとうございました。'
-    );
-
-    try {
-        const summary = await summarizeConversation(messages);
-        log("POSTPROC_SUMMARY", JSON.stringify(summary, null, 2));
-
-        const graph = await extractGraphFromSummary(summary);
-        log("POSTPROC_GRAPH", JSON.stringify(graph, null, 2));
-
-        const runId = CONVERSATION_ID;
-        await writeGraphToNeo4j(runId, graph);
-
-        log("POSTPROC_NEO4J", "Graph written to Neo4j");
-    } catch (e) {
-        log("POSTPROC_ERROR", String(e));
-    }
-
-    log(
-        'EOF',
-        JSON.stringify({
-            reason: hushFinish ? 'token_limit' : 'model_decision',
-            openai_tokens: openaiTokens,
-            anthropic_tokens: anthropicTokens,
-            openai_failures: openaiFailureCount,
-            anthropic_failures: anthropicFailureCount,
-            starting_side: startingSide,
-            base_prompt: BASE_PROMPT,
-        })
-    );
-    fs.closeSync(logFp);
-    output_to_html(LOG_FILE_NAME);
-
-
-    process.exit(0);
-};
-
-let started = false;
-
-log(`${startingSide == 'anthropic' ? ANTHROPIC_NAME : OPENAI_NAME} (initial prompt)`, messages[messages.length - 1]!.content);
-
-while (true) {
-    if (started || startingSide == 'anthropic') {
-        started = true;
-        await openaiTurn();
-        if (hushFinish) {
-            finishTurnCount += 1;
-        }
-        log(OPENAI_NAME, messages[messages.length - 1]!.content);
-
-        if (finishTurnCount >= 2 || terminationAccepted) {
-            await finish();
-            break;
-        }
-
-        await sleep(SLEEP_BY_STEP);
-
-        if (hushFinish) {
-            finishTurnCount += 1;
+            return {
+                success: true,
+                comparisons,
+                analysis,
+                errors: errors.length ? errors : undefined,
+            };
+        } catch (e) {
+            errors.push(`比較分析の生成に失敗しました: ${String(e)}`);
+            return {
+                success: false,
+                comparisons,
+                errors,
+                error: 'OpenAI での比較分析に失敗しました。',
+            };
         }
     }
 
-    started = true;
-    await anthropicTurn();
-    log(ANTHROPIC_NAME, messages[messages.length - 1]!.content);
+    async #getToolUsageStatsHandler(_modelSide: ModelSide, args: GetToolUsageStatsArgs): Promise<GetToolUsageStatsResult> {
+        const conversationId = (args?.conversation_id ?? '').trim();
+        if (!conversationId) {
+            return {
+                success: false,
+                conversation_id: '',
+                stats: null,
+                error: 'conversation_id を指定してください。',
+            };
+        }
 
-    if (finishTurnCount >= 2 || terminationAccepted) {
-        await finish();
-        break;
+        const stats = await loadToolUsageStats(conversationId);
+        if (!stats) {
+            const logExists = await fs.promises.access(`${LOG_DIR}/${conversationId}${LOG_FILE_SUFFIX}`)
+                .then(() => true)
+                .catch(() => false);
+            return {
+                success: false,
+                conversation_id: conversationId,
+                stats: null,
+                error: logExists
+                    ? 'ツール利用統計を取得できませんでした。'
+                    : '指定したセッションIDのログが見つかりません。',
+            };
+        }
+
+        const hasUsage = Object.keys(stats).some(
+            actor => stats[actor] && Object.keys(stats[actor]!).length > 0
+        );
+
+        return {
+            success: true,
+            conversation_id: conversationId,
+            stats,
+            error: hasUsage ? undefined : '記録されたツール利用はありません。',
+        };
     }
-
-    await sleep(SLEEP_BY_STEP);
 }
+
+const dialog = await PhilosophyDialog.create();
+await dialog.run();
