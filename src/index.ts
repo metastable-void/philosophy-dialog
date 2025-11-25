@@ -1719,8 +1719,8 @@ ${this.#additionalSystemInstructions || '（なし）'}
         if (this.#shouldExit) return;
         const msgs: Anthropic.Messages.MessageParam[] = this.#messages.map(msg => (
             msg.name === 'openai'
-                ? { role: 'user', content: [{ type: 'text', text: msg.content }] }
-                : { role: 'assistant', content: [{ type: 'text', text: msg.content }] }
+                ? { role: 'user', content: [{ type: 'text', text: msg.content || '(empty)' }] }
+                : { role: 'assistant', content: [{ type: 'text', text: msg.content || '(empty)' }] }
         ));
         if (this.#shouldExit) return;
 
