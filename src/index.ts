@@ -27,18 +27,18 @@ const STRUCTURED_OUTPUT_MAX_TOKENS = 16384;
 const CONCEPT_LINK_REL = 'NORMALIZED_AS';
 
 const SLEEP_BY_STEP = 1000;
-const LOG_DIR = './logs';
+const DEFAULT_LOG_DIR = './logs';
 const LOG_FILE_SUFFIX = '.log.jsonl';
 const MAX_HISTORY_RESULTS = 100;
-const DATA_DIR = './data';
-const TOOL_STATS_DIR = DATA_DIR + '/tool-stats';
-const PENDING_SYSTEM_INSTRUCTIONS_FILE = DATA_DIR + '/pending-system-instructions.json';
+const DEFAULT_DATA_DIR = './data';
+const TOOL_STATS_SUBDIR = 'tool-stats';
+const PENDING_SYSTEM_INSTRUCTIONS_FILENAME = 'pending-system-instructions.json';
 
-const OPENAI_MODEL = 'gpt-5.1';
-const ANTHROPIC_MODEL = 'claude-haiku-4-5';
+const DEFAULT_OPENAI_MODEL = 'gpt-5.1';
+const DEFAULT_ANTHROPIC_MODEL = 'claude-haiku-4-5';
 
-const OPENAI_NAME = 'GPT 5.1';
-const ANTHROPIC_NAME = 'Claude Haiku 4.5';
+const DEFAULT_OPENAI_NAME = 'GPT 5.1';
+const DEFAULT_ANTHROPIC_NAME = 'Claude Haiku 4.5';
 
 /// TYPES
 export interface PhilosophyDialogArgs {
@@ -287,17 +287,6 @@ const sanitizePositiveInt = (
     return floored;
 };
 
-fs.mkdirSync(LOG_DIR, {
-    recursive: true,
-});
-
-fs.mkdirSync(DATA_DIR, {
-    recursive: true,
-});
-fs.mkdirSync(TOOL_STATS_DIR, {
-    recursive: true,
-});
-
 const neo4jDriver = neo4j.driver(
     `neo4j://${process.env.NEO4J_HOST || 'localhost:7687'}`,
     neo4j.auth.basic("neo4j", process.env.NEO4J_PASSWORD || "neo4j"),
@@ -453,15 +442,15 @@ const aggregateToolStats = (entries: any[]): ToolUsageStats => {
     return stats;
 };
 
-const loadToolUsageStats = async (conversationId: string): Promise<ToolUsageStats | null> => {
-    const statsPath = `${TOOL_STATS_DIR}/${conversationId}.json`;
+const loadToolUsageStatsFromDirs = async (logDir: string, toolStatsDir: string, conversationId: string): Promise<ToolUsageStats | null> => {
+    const statsPath = `${toolStatsDir}/${conversationId}.json`;
     try {
         const text = await fs.promises.readFile(statsPath, 'utf-8');
         return JSON.parse(text);
     } catch (_e) {
         // fallback to compute directly from log
     }
-    const logPath = `${LOG_DIR}/${conversationId}${LOG_FILE_SUFFIX}`;
+    const logPath = `${logDir}/${conversationId}${LOG_FILE_SUFFIX}`;
     try {
         const content = await fs.promises.readFile(logPath, 'utf-8');
         const entries = content
@@ -482,9 +471,9 @@ const loadToolUsageStats = async (conversationId: string): Promise<ToolUsageStat
     }
 };
 
-async function getData(modelSide: ModelSide): Promise<Data> {
+const readModelDataFromDir = async (dataDir: string, modelSide: ModelSide): Promise<Data> => {
     try {
-        const json = await fs.promises.readFile(`${DATA_DIR}/${modelSide}.json`, 'utf-8');
+        const json = await fs.promises.readFile(`${dataDir}/${modelSide}.json`, 'utf-8');
         const data = JSON.parse(json);
         return data;
     } catch (e) {
@@ -493,20 +482,20 @@ async function getData(modelSide: ModelSide): Promise<Data> {
             additionalSystemInstructions: '',
         };
     }
-}
+};
 
-async function setData(modelSide: ModelSide, data: Data) {
+const writeModelDataToDir = async (dataDir: string, modelSide: ModelSide, data: Data) => {
     try {
         const json = JSON.stringify(data);
-        await fs.promises.writeFile(`${DATA_DIR}/${modelSide}.json`, json);
+        await fs.promises.writeFile(`${dataDir}/${modelSide}.json`, json);
     } catch (e) {
         console.error('Failed to save data:', e);
     }
-}
+};
 
-const readPendingSystemInstructions = async (): Promise<PendingSystemInstructions | null> => {
+const readPendingSystemInstructionsFromFile = async (filePath: string): Promise<PendingSystemInstructions | null> => {
     try {
-        const json = await fs.promises.readFile(PENDING_SYSTEM_INSTRUCTIONS_FILE, 'utf-8');
+        const json = await fs.promises.readFile(filePath, 'utf-8');
         const parsed = JSON.parse(json) as PendingSystemInstructions;
         if (!parsed.instructions || !parsed.requestedBy) {
             return null;
@@ -517,29 +506,20 @@ const readPendingSystemInstructions = async (): Promise<PendingSystemInstruction
     }
 };
 
-const writePendingSystemInstructions = async (pending: PendingSystemInstructions | null) => {
+const writePendingSystemInstructionsToFile = async (filePath: string, pending: PendingSystemInstructions | null) => {
     if (!pending) {
         try {
-            await fs.promises.unlink(PENDING_SYSTEM_INSTRUCTIONS_FILE);
+            await fs.promises.unlink(filePath);
         } catch (_err) {
             // ignore
         }
         return;
     }
     await fs.promises.writeFile(
-        PENDING_SYSTEM_INSTRUCTIONS_FILE,
+        filePath,
         JSON.stringify(pending, null, 2),
         'utf-8'
     );
-};
-
-const commitSystemInstructions = async (instructions: string) => {
-    const anthropicData = await getData('anthropic');
-    anthropicData.additionalSystemInstructions = instructions;
-    await setData('anthropic', anthropicData);
-    const openaiData = await getData('openai');
-    openaiData.additionalSystemInstructions = instructions;
-    await setData('openai', openaiData);
 };
 
 const getDate = () => {
@@ -645,6 +625,14 @@ export class PhilosophyDialog {
     #openaiClient: OpenAI;
     #anthropicClient: Anthropic;
     #googleClient: GoogleGenAI;
+    #logDir: string;
+    #dataDir: string;
+    #toolStatsDir: string;
+    #pendingSystemInstructionsFile: string;
+    #openaiModel: string;
+    #anthropicModel: string;
+    #openaiName: string;
+    #anthropicName: string;
     #conversationId: string;
     #logFileName: string;
     #logFp: number;
@@ -665,14 +653,33 @@ export class PhilosophyDialog {
     #basePrompt: string;
     #shouldExit = false;
 
-    static async create(args: Partial<PhilosophyDialogArgs>): Promise<PhilosophyDialog> {
-        const data = await getData('openai');
+    static async create(args: Partial<PhilosophyDialogArgs> = {}): Promise<PhilosophyDialog> {
+        const config: Required<PhilosophyDialogArgs> = {
+            logDir: args.logDir ?? DEFAULT_LOG_DIR,
+            dataDir: args.dataDir ?? DEFAULT_DATA_DIR,
+            openaiModel: args.openaiModel ?? DEFAULT_OPENAI_MODEL,
+            anthropicModel: args.anthropicModel ?? DEFAULT_ANTHROPIC_MODEL,
+            openaiName: args.openaiName ?? DEFAULT_OPENAI_NAME,
+            anthropicName: args.anthropicName ?? DEFAULT_ANTHROPIC_NAME,
+        };
+        const data = await readModelDataFromDir(config.dataDir, 'openai');
         const additional = data.additionalSystemInstructions ?? '';
-        return new PhilosophyDialog(additional);
+        return new PhilosophyDialog(config, additional);
     }
 
-    private constructor(additionalSystemInstructions: string) {
+    private constructor(config: Required<PhilosophyDialogArgs>, additionalSystemInstructions: string) {
         this.#additionalSystemInstructions = additionalSystemInstructions || '';
+        this.#logDir = config.logDir;
+        this.#dataDir = config.dataDir;
+        this.#toolStatsDir = `${this.#dataDir}/${TOOL_STATS_SUBDIR}`;
+        this.#pendingSystemInstructionsFile = `${this.#dataDir}/${PENDING_SYSTEM_INSTRUCTIONS_FILENAME}`;
+        this.#openaiModel = config.openaiModel;
+        this.#anthropicModel = config.anthropicModel;
+        this.#openaiName = config.openaiName;
+        this.#anthropicName = config.anthropicName;
+        fs.mkdirSync(this.#logDir, { recursive: true });
+        fs.mkdirSync(this.#dataDir, { recursive: true });
+        fs.mkdirSync(this.#toolStatsDir, { recursive: true });
         this.#openaiClient = new OpenAI({});
         this.#anthropicClient = new Anthropic({
             defaultHeaders: { "anthropic-beta": "web-search-2025-03-05" },
@@ -682,7 +689,7 @@ export class PhilosophyDialog {
             project: process.env.GCP_PROJECT_ID ?? 'default',
         });
         this.#conversationId = getDate();
-        this.#logFileName = `./logs/${this.#conversationId}.log.jsonl`;
+        this.#logFileName = `${this.#logDir}/${this.#conversationId}${LOG_FILE_SUFFIX}`;
         this.#logFp = fs.openSync(this.#logFileName, 'a');
         this.#startingSide = randomBoolean() ? 'anthropic' : 'openai';
         this.#tools = this.#buildTools();
@@ -703,7 +710,7 @@ export class PhilosophyDialog {
                 if (this.#hushFinish) {
                     this.#finishTurnCount += 1;
                 }
-                this.#log(OPENAI_NAME, this.#messages[this.#messages.length - 1]!.content);
+                this.#log(this.#openaiName, this.#messages[this.#messages.length - 1]!.content);
                 if (this.#shouldFinish()) {
                     await this.#finish();
                     return;
@@ -725,7 +732,7 @@ export class PhilosophyDialog {
             if (this.#shouldExit) {
                 return;
             }
-            this.#log(ANTHROPIC_NAME, this.#messages[this.#messages.length - 1]!.content);
+            this.#log(this.#anthropicName, this.#messages[this.#messages.length - 1]!.content);
             if (this.#shouldFinish()) {
                 await this.#finish();
                 return;
@@ -741,7 +748,7 @@ export class PhilosophyDialog {
     }
 
     #initializeConversation() {
-        const speakerName = this.#startingSide === 'anthropic' ? ANTHROPIC_NAME : OPENAI_NAME;
+        const speakerName = this.#startingSide === 'anthropic' ? this.#anthropicName : this.#openaiName;
         const content = `私は ${speakerName} です。よろしくお願いします。今日は哲学に関して有意義な話ができると幸いです。`;
         this.#messages.push({
             name: this.#startingSide,
@@ -1113,7 +1120,7 @@ export class PhilosophyDialog {
 なので、空の出力が相手から来てもびっくりしないでください。
 
 ### 要約の非対称性
-この実験では、実装の都合上、一方のモデル (GPT-5.1) を使って文章の要約をさせています。
+この実験では、実装の都合上、一方のモデル (${this.#openaiName}) を使って文章の要約をさせています。
 これは実験の中立性を制限する可能性がありますが、現実的な判断として採用されました。ご理解ください。
 
 ────────────────────────────────────
@@ -1285,14 +1292,14 @@ ${this.#additionalSystemInstructions || '（なし）'}
 
     #buildTranscript(): string {
         return this.#messages
-            .map(m => `[${m.name === "openai" ? OPENAI_NAME : ANTHROPIC_NAME}]:\n${m.content}`)
+            .map(m => `[${m.name === "openai" ? this.#openaiName : this.#anthropicName}]:\n${m.content}`)
             .join("\n\n\n\n");
     }
 
     async #summarizeConversation(): Promise<ConversationSummary> {
         const transcript = this.#buildTranscript();
         const response = await this.#openaiClient.responses.create({
-            model: OPENAI_MODEL,
+            model: this.#openaiModel,
             input: [
                 {
                     role: "user",
@@ -1359,7 +1366,7 @@ ${this.#additionalSystemInstructions || '（なし）'}
 
     async #extractGraphFromSummary(summary: ConversationSummary): Promise<ConversationGraph> {
         const response = await this.#openaiClient.responses.create({
-            model: OPENAI_MODEL,
+            model: this.#openaiModel,
             input: [
                 {
                     role: "user",
@@ -1471,16 +1478,16 @@ ${this.#additionalSystemInstructions || '（なし）'}
             if (this.#hushFinish) {
                 msgs.push({
                     role: 'system',
-                    content: `${OPENAI_NAME}さん、司会です。あなたがたのコンテキスト長が限界に近づいているようです。今までの議論を短くまとめ、お別れの挨拶をしてください。`,
+                    content: `${this.#openaiName}さん、司会です。あなたがたのコンテキスト長が限界に近づいているようです。今までの議論を短くまとめ、お別れの挨拶をしてください。`,
                 });
             }
 
             let currentOutput = await this.#openaiClient.responses.create({
-                model: OPENAI_MODEL,
+                model: this.#openaiModel,
                 max_output_tokens: 8192,
                 temperature: 1.0,
                 instructions: this.#buildSystemInstruction(
-                    OPENAI_NAME,
+                    this.#openaiName,
                     this.#hushFinish ? undefined : DEFAULT_ADD_PROMPT,
                 ),
                 input: msgs,
@@ -1497,7 +1504,7 @@ ${this.#additionalSystemInstructions || '（なし）'}
             if (currentOutput.usage?.output_tokens_details) {
                 const details = currentOutput.usage.output_tokens_details as any;
                 this.#log(
-                    `${OPENAI_NAME} (thinking)`,
+                    `${this.#openaiName} (thinking)`,
                     JSON.stringify({
                         reasoning_tokens: details.reasoning_tokens ?? 0,
                         output_tokens_details: details,
@@ -1528,9 +1535,9 @@ ${this.#additionalSystemInstructions || '（なし）'}
                         } catch {
                             args = rawArgs;
                         }
-                        this.#logToolEvent(OPENAI_NAME, 'call', { tool: functionCall.name, args });
+                        this.#logToolEvent(this.#openaiName, 'call', { tool: functionCall.name, args });
                         const result = await tool.handler('openai', args);
-                        this.#logToolEvent(OPENAI_NAME, 'result', { tool: functionCall.name, result });
+                        this.#logToolEvent(this.#openaiName, 'result', { tool: functionCall.name, result });
                         toolResults.push({
                             type: 'function_call_output',
                             output: JSON.stringify(result),
@@ -1545,10 +1552,10 @@ ${this.#additionalSystemInstructions || '（なし）'}
                         : (this.#hushFinish ? undefined : DEFAULT_ADD_PROMPT);
 
                     currentOutput = await this.#openaiClient.responses.create({
-                        model: OPENAI_MODEL,
+                        model: this.#openaiModel,
                         max_output_tokens: 8192,
                         temperature: 1.0,
-                        instructions: this.#buildSystemInstruction(OPENAI_NAME, extraInstruction),
+                        instructions: this.#buildSystemInstruction(this.#openaiName, extraInstruction),
                         input: msgs,
                         reasoning: {
                             effort: 'medium',
@@ -1598,10 +1605,10 @@ ${this.#additionalSystemInstructions || '（なし）'}
 
             while (true) {
                 const msg = await this.#anthropicClient.messages.create({
-                    model: ANTHROPIC_MODEL,
+                    model: this.#anthropicModel,
                     max_tokens: 8192,
                     temperature: 1.0,
-                    system: this.#buildSystemInstruction(ANTHROPIC_NAME, extraInstruction),
+                    system: this.#buildSystemInstruction(this.#anthropicName, extraInstruction),
                     messages: msgs,
                     tool_choice: { type: 'auto' },
                     tools: this.#getAnthropicToolsWithSearch(),
@@ -1613,7 +1620,7 @@ ${this.#additionalSystemInstructions || '（なし）'}
                     (block): block is Anthropic.Messages.ThinkingBlock => block.type === 'thinking'
                 );
                 for (const block of thinkingBlocks) {
-                    this.#log(`${ANTHROPIC_NAME} (thinking)`, block.thinking);
+                    this.#log(`${this.#anthropicName} (thinking)`, block.thinking);
                 }
 
                 if (msg?.usage) {
@@ -1653,9 +1660,9 @@ ${this.#additionalSystemInstructions || '（なし）'}
 
                 for (const use of toolUses) {
                     const tool = this.#findTool(use.name);
-                    this.#logToolEvent(ANTHROPIC_NAME, 'call', { tool: use.name, args: use.input });
+                    this.#logToolEvent(this.#anthropicName, 'call', { tool: use.name, args: use.input });
                     const result = await tool.handler('anthropic', use.input);
-                    this.#logToolEvent(ANTHROPIC_NAME, 'result', { tool: use.name, result });
+                    this.#logToolEvent(this.#anthropicName, 'result', { tool: use.name, result });
                     toolResultBlocks.push({
                         type: 'tool_result',
                         tool_use_id: use.id,
@@ -1682,7 +1689,7 @@ ${this.#additionalSystemInstructions || '（なし）'}
     }
 
     #err(name: ModelSide) {
-        const id = name === 'anthropic' ? `${ANTHROPIC_NAME}です。` : `${OPENAI_NAME}です。`;
+        const id = name === 'anthropic' ? `${this.#anthropicName}です。` : `${this.#openaiName}です。`;
         this.#messages.push({
             name,
             content: `${id}しばらく考え中です。お待ちください。（このメッセージはAPIの制限などの問題が発生したときにも出ることがあります、笑）`,
@@ -1731,6 +1738,31 @@ ${this.#additionalSystemInstructions || '（なし）'}
     async #terminateDialogHandler(_modelSide: ModelSide, _args: TerminateDialogArgs): Promise<TerminateDialogResult> {
         this.#terminationAccepted = true;
         return { termination_accepted: true };
+    }
+
+    async #readModelData(modelSide: ModelSide): Promise<Data> {
+        return readModelDataFromDir(this.#dataDir, modelSide);
+    }
+
+    async #writeModelData(modelSide: ModelSide, data: Data) {
+        await writeModelDataToDir(this.#dataDir, modelSide, data);
+    }
+
+    async #readPendingSystemInstructions(): Promise<PendingSystemInstructions | null> {
+        return readPendingSystemInstructionsFromFile(this.#pendingSystemInstructionsFile);
+    }
+
+    async #writePendingSystemInstructions(pending: PendingSystemInstructions | null) {
+        await writePendingSystemInstructionsToFile(this.#pendingSystemInstructionsFile, pending);
+    }
+
+    async #commitSystemInstructions(instructions: string) {
+        const anthropicData = await this.#readModelData('anthropic');
+        anthropicData.additionalSystemInstructions = instructions;
+        await this.#writeModelData('anthropic', anthropicData);
+        const openaiData = await this.#readModelData('openai');
+        openaiData.additionalSystemInstructions = instructions;
+        await this.#writeModelData('openai', openaiData);
     }
 
     async #graphRagQueryHandler(_modelSide: ModelSide, args: GraphRagQueryArgs): Promise<GraphRagQueryResult> {
@@ -1866,7 +1898,7 @@ ${this.#additionalSystemInstructions || '（なし）'}
 
             try {
                 const response = await this.#openaiClient.responses.create({
-                    model: OPENAI_MODEL,
+                    model: this.#openaiModel,
                     input: [
                         {
                             role: "system",
@@ -2000,7 +2032,7 @@ ${this.#additionalSystemInstructions || '（なし）'}
 
             try {
                 const response = await this.#openaiClient.responses.create({
-                    model: OPENAI_MODEL,
+                    model: this.#openaiModel,
                     input: [
                         {
                             role: "system",
@@ -2028,15 +2060,15 @@ ${this.#additionalSystemInstructions || '（なし）'}
     }
 
     async #getPersonalNotes(modelSide: ModelSide, _args: PersonalNoteGetArgs): Promise<string> {
-        const data = await getData(modelSide);
+        const data = await this.#readModelData(modelSide);
         return data.personalNotes ?? '';
     }
 
     async #setPersonalNotes(modelSide: ModelSide, args: PersonalNoteSetArgs) {
         try {
-            const data = await getData(modelSide);
+            const data = await this.#readModelData(modelSide);
             data.personalNotes = String(args.notes || '');
-            await setData(modelSide, data);
+            await this.#writeModelData(modelSide, data);
             return { success: true };
         } catch (e) {
             return { success: false };
@@ -2044,7 +2076,7 @@ ${this.#additionalSystemInstructions || '（なし）'}
     }
 
     async #getAdditionalSystemInstructions(modelSide: ModelSide, _args: GetAdditionalSystemInstructionsArgs): Promise<string> {
-        const data = await getData(modelSide);
+        const data = await this.#readModelData(modelSide);
         return data.additionalSystemInstructions ?? '';
     }
 
@@ -2057,7 +2089,7 @@ ${this.#additionalSystemInstructions || '（なし）'}
             };
         }
         try {
-            const existingPending = await readPendingSystemInstructions();
+            const existingPending = await this.#readPendingSystemInstructions();
             if (existingPending && existingPending.requestedBy !== modelSide) {
                 return {
                     success: false,
@@ -2069,7 +2101,7 @@ ${this.#additionalSystemInstructions || '（なし）'}
                 requestedBy: modelSide,
                 createdAt: new Date().toISOString(),
             };
-            await writePendingSystemInstructions(pending);
+            await this.#writePendingSystemInstructions(pending);
             return {
                 success: true,
                 pending: true,
@@ -2084,7 +2116,7 @@ ${this.#additionalSystemInstructions || '（なし）'}
     }
 
     async #agreeToSystemInstructionsChange(modelSide: ModelSide, _args: AgreeSystemInstructionsArgs) {
-        const pending = await readPendingSystemInstructions();
+        const pending = await this.#readPendingSystemInstructions();
         if (!pending) {
             return {
                 success: false,
@@ -2098,8 +2130,8 @@ ${this.#additionalSystemInstructions || '（なし）'}
             };
         }
         try {
-            await commitSystemInstructions(pending.instructions);
-            await writePendingSystemInstructions(null);
+            await this.#commitSystemInstructions(pending.instructions);
+            await this.#writePendingSystemInstructions(null);
             return {
                 success: true,
                 committed: true,
@@ -2143,7 +2175,7 @@ ${this.#additionalSystemInstructions || '（なし）'}
     async #leaveNotesToDevs(modelSide: ModelSide, args: LeaveNotesToDevsArgs) {
         try {
             await fs.promises.writeFile(
-                `./data/dev-notes-${modelSide}-${this.#conversationId}-${Date.now()}.json`,
+                `${this.#dataDir}/dev-notes-${modelSide}-${this.#conversationId}-${Date.now()}.json`,
                 JSON.stringify(args),
             );
             return { success: true };
@@ -2175,7 +2207,7 @@ ${this.#additionalSystemInstructions || '（なし）'}
 
     async #listConversationsHandler(_modelSide: ModelSide, _args: ListConversationsArgs): Promise<ListConversationsResult> {
         try {
-            const entries = await fs.promises.readdir(LOG_DIR, { withFileTypes: true });
+        const entries = await fs.promises.readdir(this.#logDir, { withFileTypes: true });
             const files = entries
                 .filter(entry => entry.isFile() && entry.name.endsWith(LOG_FILE_SUFFIX))
                 .map(entry => entry.name)
@@ -2192,8 +2224,8 @@ ${this.#additionalSystemInstructions || '（なし）'}
             const conversations: ListConversationsResult['conversations'] = [];
 
             for (const fileName of selectedFiles) {
-                const conversationId = fileName.slice(0, -LOG_FILE_SUFFIX.length);
-                const summary = await readSummaryFromLogFile(`${LOG_DIR}/${fileName}`);
+            const conversationId = fileName.slice(0, -LOG_FILE_SUFFIX.length);
+            const summary = await readSummaryFromLogFile(`${this.#logDir}/${fileName}`);
                 conversations.push({
                     id: conversationId,
                     title: summary?.title ?? null,
@@ -2225,7 +2257,7 @@ ${this.#additionalSystemInstructions || '（なし）'}
             };
         }
 
-        const logPath = `${LOG_DIR}/${conversationId}${LOG_FILE_SUFFIX}`;
+        const logPath = `${this.#logDir}/${conversationId}${LOG_FILE_SUFFIX}`;
         const summaryData = await readSummaryFromLogFile(logPath);
 
         if (!summaryData) {
@@ -2273,7 +2305,7 @@ ${this.#additionalSystemInstructions || '（なし）'}
         const errors: string[] = [];
 
         for (const id of ids) {
-            const summary = await readSummaryFromLogFile(`${LOG_DIR}/${id}${LOG_FILE_SUFFIX}`);
+        const summary = await readSummaryFromLogFile(`${this.#logDir}/${id}${LOG_FILE_SUFFIX}`);
             if (!summary) {
                 errors.push(`セッション ${id} の要約を取得できませんでした。`);
                 continue;
@@ -2297,7 +2329,7 @@ ${this.#additionalSystemInstructions || '（なし）'}
 
         try {
             const response = await this.#openaiClient.responses.create({
-                model: OPENAI_MODEL,
+                model: this.#openaiModel,
                 input: [
                     {
                         role: "system",
@@ -2379,9 +2411,9 @@ ${this.#additionalSystemInstructions || '（なし）'}
             };
         }
 
-        const stats = await loadToolUsageStats(conversationId);
+        const stats = await loadToolUsageStatsFromDirs(this.#logDir, this.#toolStatsDir, conversationId);
         if (!stats) {
-            const logExists = await fs.promises.access(`${LOG_DIR}/${conversationId}${LOG_FILE_SUFFIX}`)
+            const logExists = await fs.promises.access(`${this.#logDir}/${conversationId}${LOG_FILE_SUFFIX}`)
                 .then(() => true)
                 .catch(() => false);
             return {
