@@ -1474,18 +1474,21 @@ ${this.#additionalSystemInstructions || '（なし）'}
                 ? { role: 'user', content: msg.content }
                 : { role: 'assistant', content: msg.content }
         ));
+        if (this.#shouldExit) return;
 
         try {
             const count = openaiTokenCounter.chat(msgs as RawMessageOpenAi[], 'gpt-4o') + 500;
             if (count > 0.8 * GPT_5_1_MAX) {
                 this.#hushFinish = true;
             }
+            if (this.#shouldExit) return;
             if (this.#hushFinish) {
                 msgs.push({
                     role: 'system',
                     content: `${this.#openaiName}さん、司会です。あなたがたのコンテキスト長が限界に近づいているようです。今までの議論を短くまとめ、お別れの挨拶をしてください。`,
                 });
             }
+            if (this.#shouldExit) return;
 
             let currentOutput = await this.#openaiClient.responses.create({
                 model: this.#openaiModel,
@@ -1502,6 +1505,7 @@ ${this.#additionalSystemInstructions || '（なし）'}
                 tool_choice: 'auto',
                 tools: this.#getOpenAIToolsWithSearch(),
             });
+            if (this.#shouldExit) return;
 
             if (currentOutput.usage?.total_tokens) {
                 this.#openaiTokens = currentOutput.usage.total_tokens;
@@ -1516,14 +1520,17 @@ ${this.#additionalSystemInstructions || '（なし）'}
                     })
                 );
             }
+            if (this.#shouldExit) return;
 
             while (true) {
+                if (this.#shouldExit) return;
                 const outputItems = currentOutput.output;
                 if (!outputItems || outputItems.length === 0) {
                     throw new Error('Empty output from OpenAI');
                 }
 
                 msgs.push(...outputItems);
+                if (this.#shouldExit) return;
                 const functionCalls = outputItems.filter(
                     (item): item is OpenAI.Responses.ResponseFunctionToolCall => item.type === 'function_call'
                 );
@@ -1540,8 +1547,11 @@ ${this.#additionalSystemInstructions || '（なし）'}
                         } catch {
                             args = rawArgs;
                         }
+                        if (this.#shouldExit) return;
                         this.#logToolEvent(this.#openaiName, 'call', { tool: functionCall.name, args });
+                        if (this.#shouldExit) return;
                         const result = await tool.handler('openai', args);
+                        if (this.#shouldExit) return;
                         this.#logToolEvent(this.#openaiName, 'result', { tool: functionCall.name, result });
                         toolResults.push({
                             type: 'function_call_output',
@@ -1568,6 +1578,7 @@ ${this.#additionalSystemInstructions || '（なし）'}
                         tool_choice: 'auto',
                         tools: this.#getOpenAIToolsWithSearch(),
                     });
+                    if (this.#shouldExit) return;
 
                     if (currentOutput.usage?.total_tokens) {
                         this.#openaiTokens = currentOutput.usage.total_tokens;
@@ -1575,6 +1586,7 @@ ${this.#additionalSystemInstructions || '（なし）'}
                     continue;
                 }
 
+                if (this.#shouldExit) return;
                 const messageItem = findLastOpenAIOutput(
                     outputItems,
                     (item): item is OpenAI.Responses.ResponseOutputMessage => item.type === 'message',
@@ -1591,6 +1603,7 @@ ${this.#additionalSystemInstructions || '（なし）'}
                 break;
             }
         } catch (e) {
+            if (this.#shouldExit) return;
             this.#openaiFailureCount += 1;
             console.error(e);
             this.#err('openai');
@@ -1604,11 +1617,13 @@ ${this.#additionalSystemInstructions || '（なし）'}
                 ? { role: 'user', content: [{ type: 'text', text: msg.content }] }
                 : { role: 'assistant', content: [{ type: 'text', text: msg.content }] }
         ));
+        if (this.#shouldExit) return;
 
         try {
             let extraInstruction = this.#hushFinish ? TOKEN_LIMIT_ADD_PROMPT : DEFAULT_ADD_PROMPT;
 
             while (true) {
+                if (this.#shouldExit) return;
                 const msg = await this.#anthropicClient.messages.create({
                     model: this.#anthropicModel,
                     max_tokens: 8192,
@@ -1619,6 +1634,7 @@ ${this.#additionalSystemInstructions || '（なし）'}
                     tools: this.#getAnthropicToolsWithSearch(),
                     thinking: { type: 'enabled', budget_tokens: 1024 },
                 });
+                if (this.#shouldExit) return;
 
                 const contentBlocks = msg.content;
                 const thinkingBlocks = contentBlocks.filter(
@@ -1626,6 +1642,7 @@ ${this.#additionalSystemInstructions || '（なし）'}
                 );
                 for (const block of thinkingBlocks) {
                     this.#log(`${this.#anthropicName} (thinking)`, block.thinking);
+                    if (this.#shouldExit) return;
                 }
 
                 if (msg?.usage) {
@@ -1637,6 +1654,7 @@ ${this.#additionalSystemInstructions || '（なし）'}
                 } else {
                     this.#hushFinish = true;
                 }
+                if (this.#shouldExit) return;
 
                 const assistantBlocks = contentBlocks.filter(
                     (block): block is Anthropic.Messages.ContentBlock => block.type !== 'thinking'
@@ -1647,6 +1665,7 @@ ${this.#additionalSystemInstructions || '（なし）'}
                 }
 
                 msgs.push({ role: 'assistant', content: contentBlocks });
+                if (this.#shouldExit) return;
 
                 const toolUses = assistantBlocks.filter(
                     (block): block is Anthropic.Messages.ToolUseBlock => block.type === 'tool_use'
@@ -1666,7 +1685,9 @@ ${this.#additionalSystemInstructions || '（なし）'}
                 for (const use of toolUses) {
                     const tool = this.#findTool(use.name);
                     this.#logToolEvent(this.#anthropicName, 'call', { tool: use.name, args: use.input });
+                    if (this.#shouldExit) return;
                     const result = await tool.handler('anthropic', use.input);
+                    if (this.#shouldExit) return;
                     this.#logToolEvent(this.#anthropicName, 'result', { tool: use.name, result });
                     toolResultBlocks.push({
                         type: 'tool_result',
@@ -1685,8 +1706,10 @@ ${this.#additionalSystemInstructions || '（なし）'}
                     : (this.#hushFinish
                         ? '司会より：あなたがたのコンテキスト長が限界に近付いています。今までの議論を短くまとめ、お別れの挨拶をしてください。'
                         : DEFAULT_ADD_PROMPT);
+                if (this.#shouldExit) return;
             }
         } catch (e) {
+            if (this.#shouldExit) return;
             this.#anthropicFailureCount += 1;
             console.error(e);
             this.#err('anthropic');
@@ -2193,8 +2216,8 @@ ${this.#additionalSystemInstructions || '（なし）'}
     }
 
     async #abortProcessHandler(_modelSide: ModelSide, _args: AbortProcessArgs): Promise<never> {
-        process.exit(0);
-        throw new Error('Process exited');
+        this.#shouldExit = true;
+        throw new Error('Process aborted by abort_process tool');
     }
 
     async #sleepToolHandler(_modelSide: ModelSide, args: SleepToolArgs): Promise<SleepToolResult> {
