@@ -287,108 +287,6 @@ const sanitizePositiveInt = (
     return floored;
 };
 
-const neo4jDriver = neo4j.driver(
-    `neo4j://${process.env.NEO4J_HOST || 'localhost:7687'}`,
-    neo4j.auth.basic("neo4j", process.env.NEO4J_PASSWORD || "neo4j"),
-    {
-        /* optional tuning */
-    }
-);
-
-export async function writeGraphToNeo4j(
-    runId: string,
-    graph: ConversationGraph
-): Promise<void> {
-    const session = neo4jDriver.session();
-    const idMap = new Map<string, string>();
-    const getOrCreateNamespacedId = (rawId: string): string => {
-        const key = rawId ?? '';
-        if (idMap.has(key)) {
-            return idMap.get(key)!;
-        }
-        const baseId =
-            key.trim().length > 0
-                ? key
-                : randomBytes(12).toString('base64url');
-        const namespacedId = `${runId}:${baseId}`;
-        idMap.set(key, namespacedId);
-        return namespacedId;
-    };
-
-    try {
-        // 1. Run node
-        await session.run(
-            `
-            MERGE (r:Run {id: $runId})
-            ON CREATE SET r.created_at = datetime()
-            `,
-            { runId }
-        );
-
-        // 2. Nodes
-        for (const node of graph.nodes) {
-            const conceptKeyData = buildConceptKey(node.type, node.text);
-            const namespacedId = getOrCreateNamespacedId(node.id);
-            await session.run(
-                `
-                MERGE (n:Node {id: $id})
-                SET n.text = $text,
-                    n.type = $type,
-                    n.speaker = $speaker,
-                    n.original_id = $originalId
-                WITH n
-                MATCH (r:Run {id: $runId})
-                MERGE (n)-[:IN_RUN]->(r)
-                WITH n
-                FOREACH (_ IN CASE WHEN $conceptKey IS NULL THEN [] ELSE [1] END |
-                    MERGE (c:Concept {key: $conceptKey})
-                    ON CREATE SET c.type = $type,
-                                  c.normalized_text = $normalizedText,
-                                  c.created_at = datetime()
-                    SET c.latest_text = $text
-                    MERGE (n)-[:${CONCEPT_LINK_REL}]->(c)
-                )
-                `,
-                {
-                    id: namespacedId,
-                    originalId: node.id,
-                    text: node.text,
-                    type: node.type,
-                    speaker: node.speaker ?? null,
-                    runId,
-                    conceptKey: conceptKeyData?.key ?? null,
-                    normalizedText: conceptKeyData?.normalizedText ?? null,
-                }
-            );
-        }
-
-        // 3. Edges (as relationship types)
-        for (const edge of graph.edges) {
-            // Sanity: only allow known relationship types
-            const relType = edge.type.toUpperCase(); // SUPPORTS, CONTRADICTS, ...
-
-            if (!["SUPPORTS", "CONTRADICTS", "ELABORATES", "RESPONDS_TO", "REFERS_TO"].includes(relType)) {
-                continue;
-            }
-            const sourceId = getOrCreateNamespacedId(edge.source);
-            const targetId = getOrCreateNamespacedId(edge.target);
-            const cypher = `
-                MATCH (a:Node {id: $source})
-                MATCH (b:Node {id: $target})
-                MERGE (a)-[r:${relType}]->(b)
-                RETURN r
-            `;
-
-            await session.run(cypher, {
-                source: sourceId,
-                target: targetId,
-            });
-        }
-    } finally {
-        await session.close();
-    }
-}
-
 const parseSummaryFromLogContent = (content: string): ConversationSummary | null => {
     const lines = content.split('\n');
     for (const line of lines) {
@@ -652,6 +550,7 @@ export class PhilosophyDialog {
     #additionalSystemInstructions: string;
     #basePrompt: string;
     #shouldExit = false;
+    #neo4jDriver;
 
     static async create(args: Partial<PhilosophyDialogArgs> = {}): Promise<PhilosophyDialog> {
         const config: Required<PhilosophyDialogArgs> = {
@@ -677,6 +576,13 @@ export class PhilosophyDialog {
         this.#anthropicModel = config.anthropicModel;
         this.#openaiName = config.openaiName;
         this.#anthropicName = config.anthropicName;
+        this.#neo4jDriver = neo4j.driver(
+            `neo4j://${process.env.NEO4J_HOST || 'localhost:7687'}`,
+            neo4j.auth.basic(process.env.NEO4J_USER || "neo4j", process.env.NEO4J_PASSWORD || "neo4j"),
+            {
+                /* optional tuning */
+            }
+        );
         fs.mkdirSync(this.#logDir, { recursive: true });
         fs.mkdirSync(this.#dataDir, { recursive: true });
         fs.mkdirSync(this.#toolStatsDir, { recursive: true });
@@ -755,6 +661,100 @@ export class PhilosophyDialog {
             content,
         });
         this.#log(`${speakerName} (initial prompt)`, content);
+    }
+
+    async #writeGraphToNeo4j(
+        runId: string,
+        graph: ConversationGraph
+    ): Promise<void> {
+        const session = this.#neo4jDriver.session();
+        const idMap = new Map<string, string>();
+        const getOrCreateNamespacedId = (rawId: string): string => {
+            const key = rawId ?? '';
+            if (idMap.has(key)) {
+                return idMap.get(key)!;
+            }
+            const baseId =
+                key.trim().length > 0
+                    ? key
+                    : randomBytes(12).toString('base64url');
+            const namespacedId = `${runId}:${baseId}`;
+            idMap.set(key, namespacedId);
+            return namespacedId;
+        };
+
+        try {
+            // 1. Run node
+            await session.run(
+                `
+                MERGE (r:Run {id: $runId})
+                ON CREATE SET r.created_at = datetime()
+                `,
+                { runId }
+            );
+
+            // 2. Nodes
+            for (const node of graph.nodes) {
+                const conceptKeyData = buildConceptKey(node.type, node.text);
+                const namespacedId = getOrCreateNamespacedId(node.id);
+                await session.run(
+                    `
+                    MERGE (n:Node {id: $id})
+                    SET n.text = $text,
+                        n.type = $type,
+                        n.speaker = $speaker,
+                        n.original_id = $originalId
+                    WITH n
+                    MATCH (r:Run {id: $runId})
+                    MERGE (n)-[:IN_RUN]->(r)
+                    WITH n
+                    FOREACH (_ IN CASE WHEN $conceptKey IS NULL THEN [] ELSE [1] END |
+                        MERGE (c:Concept {key: $conceptKey})
+                        ON CREATE SET c.type = $type,
+                                    c.normalized_text = $normalizedText,
+                                    c.created_at = datetime()
+                        SET c.latest_text = $text
+                        MERGE (n)-[:${CONCEPT_LINK_REL}]->(c)
+                    )
+                    `,
+                    {
+                        id: namespacedId,
+                        originalId: node.id,
+                        text: node.text,
+                        type: node.type,
+                        speaker: node.speaker ?? null,
+                        runId,
+                        conceptKey: conceptKeyData?.key ?? null,
+                        normalizedText: conceptKeyData?.normalizedText ?? null,
+                    }
+                );
+            }
+
+            // 3. Edges (as relationship types)
+            for (const edge of graph.edges) {
+                // Sanity: only allow known relationship types
+                const relType = edge.type.toUpperCase(); // SUPPORTS, CONTRADICTS, ...
+
+                if (!["SUPPORTS", "CONTRADICTS", "ELABORATES", "RESPONDS_TO", "REFERS_TO"].includes(relType)) {
+                    continue;
+                }
+                const sourceId = getOrCreateNamespacedId(edge.source);
+                const targetId = getOrCreateNamespacedId(edge.target);
+                const cypher = `
+                    MATCH (a:Node {id: $source})
+                    MATCH (b:Node {id: $target})
+                    MERGE (a)-[r:${relType}]->(b)
+                    RETURN r
+                `;
+
+                await session.run(cypher, {
+                    source: sourceId,
+                    target: targetId,
+                });
+            }
+        } finally {
+            await session.close();
+        }
     }
 
     #shouldFinish() {
@@ -1715,7 +1715,7 @@ ${this.#additionalSystemInstructions || '（なし）'}
             const graph = await this.#extractGraphFromSummary(summary);
             this.#log('POSTPROC_GRAPH', JSON.stringify(graph, null, 2));
 
-            await writeGraphToNeo4j(this.#conversationId, graph);
+            await this.#writeGraphToNeo4j(this.#conversationId, graph);
             this.#log('POSTPROC_NEO4J', 'Graph written to Neo4j');
         } catch (e) {
             this.#log('POSTPROC_ERROR', String(e));
@@ -1766,7 +1766,7 @@ ${this.#additionalSystemInstructions || '（なし）'}
     }
 
     async #graphRagQueryHandler(_modelSide: ModelSide, args: GraphRagQueryArgs): Promise<GraphRagQueryResult> {
-        const session = neo4jDriver.session();
+        const session = this.#neo4jDriver.session();
 
         const maxHops = sanitizePositiveInt(args.max_hops, 2);
         const maxSeeds = sanitizePositiveInt(args.max_seeds, 5);
@@ -1932,7 +1932,7 @@ ${this.#additionalSystemInstructions || '（なし）'}
     }
 
     async #graphRagFocusNodeHandler(_modelSide: ModelSide, args: GraphRagFocusNodeArgs): Promise<GraphRagFocusNodeResult> {
-        const session = neo4jDriver.session();
+        const session = this.#neo4jDriver.session();
         const nodeId = (args.node_id ?? '').trim();
         if (!nodeId) {
             return { context: 'GraphRAG Focus: node_id が指定されていません。' };
