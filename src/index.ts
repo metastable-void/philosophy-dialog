@@ -14,8 +14,22 @@ import { GoogleGenAI } from "@google/genai";
 
 import { output_to_html } from './html.js';
 
+/// INITIALIZE ENV
+dotenv.config();
 
-type ModelSide = 'openai' | 'anthropic';
+/// CONST DEFINITIONS
+const GPT_5_1_MAX = 400000;
+const CLAUDE_HAIKU_4_5_MAX = 200000;
+const STRUCTURED_OUTPUT_MAX_TOKENS = 16384;
+const CONCEPT_LINK_REL = 'NORMALIZED_AS';
+
+const SLEEP_BY_STEP = 1000;
+const LOG_DIR = './logs';
+const LOG_FILE_SUFFIX = '.log.jsonl';
+const MAX_HISTORY_RESULTS = 100;
+const DATA_DIR = './data';
+const TOOL_STATS_DIR = DATA_DIR + '/tool-stats';
+const PENDING_SYSTEM_INSTRUCTIONS_FILE = DATA_DIR + '/pending-system-instructions.json';
 
 const OPENAI_MODEL = 'gpt-5.1';
 const ANTHROPIC_MODEL = 'claude-haiku-4-5';
@@ -23,44 +37,8 @@ const ANTHROPIC_MODEL = 'claude-haiku-4-5';
 const OPENAI_NAME = 'GPT 5.1';
 const ANTHROPIC_NAME = 'Claude Haiku 4.5';
 
-const GPT_5_1_MAX = 400000;
-const CLAUDE_HAIKU_4_5_MAX = 200000;
-const STRUCTURED_OUTPUT_MAX_TOKENS = 16384;
-const CONCEPT_LINK_REL = 'NORMALIZED_AS';
-
-const normalizeConceptText = (text?: string | null): string | null => {
-    if (!text) return null;
-    const normalized = text
-        .normalize('NFKC')
-        .toLowerCase()
-        .replace(/\s+/g, ' ')
-        .trim();
-    return normalized || null;
-};
-
-const buildConceptKey = (type?: string | null, text?: string | null): { key: string; normalizedText: string } | null => {
-    const normalizedText = normalizeConceptText(text);
-    if (!normalizedText) return null;
-    const normalizedType = (type ?? 'unknown').toLowerCase();
-    return {
-        key: `${normalizedType}:${normalizedText}`,
-        normalizedText,
-    };
-};
-
-const sanitizePositiveInt = (
-    value: number | null | undefined,
-    fallback: number,
-    min: number = 1,
-): number => {
-    const num = Number(value);
-    if (!Number.isFinite(num)) return fallback;
-    const floored = Math.floor(num);
-    if (floored < min) return fallback;
-    return floored;
-};
-
-const SLEEP_BY_STEP = 1000;
+/// TYPES
+type ModelSide = 'openai' | 'anthropic';
 
 export interface ConversationSummary {
     title?: string;
@@ -101,7 +79,206 @@ interface RawMessageOpenAi {
     content: string;
 }
 
-dotenv.config();
+interface Data {
+    personalNotes: string;
+    additionalSystemInstructions: string;
+}
+
+interface PendingSystemInstructions {
+    instructions: string;
+    requestedBy: ModelSide;
+    createdAt: string;
+}
+
+type ToolUsageStats = Record<string, Record<string, number>>;
+
+export type ToolName =
+    "terminate_dialog"
+    | "graph_rag_query"
+    | "graph_rag_focus_node"
+    | "get_personal_notes"
+    | "set_personal_notes"
+    | "leave_notes_to_devs"
+    | "set_additional_system_instructions"
+    | "get_additional_system_instructions"
+    | "agree_to_system_instructions_change"
+    | "get_main_source_codes"
+    | "ask_gemini"
+    | "list_conversations"
+    | "get_conversation_summary"
+    | "compare_conversation_themes"
+    | "get_tool_usage_stats"
+    | "abort_process"
+    | "sleep";
+
+export interface ToolDefinition<TArgs = any, TResult = any, TName = ToolName> {
+    name: TName;
+    description: string;
+    parameters: any; // JSON Schema
+    handler: (modelSide: ModelSide, args: TArgs) => Promise<TResult>;
+    strict?: boolean;
+}
+
+// Example tool implementation
+type TerminateDialogArgs = {};
+
+type TerminateDialogResult = {
+    termination_accepted: true,
+};
+
+type PersonalNoteSetArgs = {
+    notes: string;
+};
+
+type PersonalNoteGetArgs = {};
+
+// GraphRAG tool implementation
+type GraphRagQueryArgs = {
+    query: string;
+    max_hops?: number | null;   // how far to expand from seed nodes
+    max_seeds?: number | null;  // how many seed nodes to start from
+};
+
+type GraphRagQueryResult = {
+    context: string;     // textual summary for the model to use
+};
+
+type GraphRagFocusNodeArgs = {
+    node_id: string;
+    max_hops?: number | null;
+};
+
+type GraphRagFocusNodeResult = {
+    context: string;
+};
+
+interface GetAdditionalSystemInstructionsArgs {}
+
+interface SetAdditionalSystemInstructionsArgs {
+    systemInstructions: string;
+}
+
+interface AgreeSystemInstructionsArgs {}
+
+interface AskGeminiArgs {
+    speaker: string;
+    text: string;
+}
+
+interface GetMainSourceCodesArgs {}
+
+interface LeaveNotesToDevsArgs {
+    notes: string;
+}
+
+type AbortProcessArgs = {};
+
+interface SleepToolArgs {
+    seconds: number;
+}
+
+interface SleepToolResult {
+    message: string;
+}
+
+interface CompareConversationThemesArgs {
+    conversation_ids: string[];
+}
+
+interface CompareConversationThemesResult {
+    success: boolean;
+    comparisons?: {
+        conversation_id: string;
+        title: string | null;
+        topics: string[];
+        japanese_summary: string;
+    }[];
+    analysis?: {
+        common_themes: string[];
+        divergences: string[];
+        emerging_questions: string[];
+    };
+    errors?: string[];
+    error?: string;
+}
+
+interface ListConversationsArgs {}
+
+interface ListConversationsResult {
+    success: boolean;
+    conversations: {
+        id: string;
+        title: string | null;
+    }[];
+    error?: string;
+}
+
+interface GetConversationSummaryArgs {
+    conversation_id: string;
+}
+
+interface GetConversationSummaryResult {
+    success: boolean;
+    conversation_id: string;
+    summary: string | null;
+    error?: string;
+}
+
+interface GetToolUsageStatsArgs {
+    conversation_id: string;
+}
+
+interface GetToolUsageStatsResult {
+    success: boolean;
+    conversation_id: string;
+    stats: ToolUsageStats | null;
+    error?: string;
+}
+
+
+/// HELPERS
+const normalizeConceptText = (text?: string | null): string | null => {
+    if (!text) return null;
+    const normalized = text
+        .normalize('NFKC')
+        .toLowerCase()
+        .replace(/\s+/g, ' ')
+        .trim();
+    return normalized || null;
+};
+
+const buildConceptKey = (type?: string | null, text?: string | null): { key: string; normalizedText: string } | null => {
+    const normalizedText = normalizeConceptText(text);
+    if (!normalizedText) return null;
+    const normalizedType = (type ?? 'unknown').toLowerCase();
+    return {
+        key: `${normalizedType}:${normalizedText}`,
+        normalizedText,
+    };
+};
+
+const sanitizePositiveInt = (
+    value: number | null | undefined,
+    fallback: number,
+    min: number = 1,
+): number => {
+    const num = Number(value);
+    if (!Number.isFinite(num)) return fallback;
+    const floored = Math.floor(num);
+    if (floored < min) return fallback;
+    return floored;
+};
+
+fs.mkdirSync(LOG_DIR, {
+    recursive: true,
+});
+
+fs.mkdirSync(DATA_DIR, {
+    recursive: true,
+});
+fs.mkdirSync(TOOL_STATS_DIR, {
+    recursive: true,
+});
 
 const neo4jDriver = neo4j.driver(
     "neo4j://localhost:7687",
@@ -205,23 +382,6 @@ export async function writeGraphToNeo4j(
     }
 }
 
-const LOG_DIR = './logs';
-const LOG_FILE_SUFFIX = '.log.jsonl';
-const MAX_HISTORY_RESULTS = 100;
-const TOOL_STATS_DIR = './data/tool-stats';
-const PENDING_SYSTEM_INSTRUCTIONS_FILE = './data/pending-system-instructions.json';
-
-fs.mkdirSync('./logs', {
-    recursive: true,
-});
-
-fs.mkdirSync('./data', {
-    recursive: true,
-});
-fs.mkdirSync(TOOL_STATS_DIR, {
-    recursive: true,
-});
-
 const parseSummaryFromLogContent = (content: string): ConversationSummary | null => {
     const lines = content.split('\n');
     for (const line of lines) {
@@ -254,8 +414,6 @@ const readSummaryFromLogFile = async (logPath: string): Promise<ConversationSumm
         return null;
     }
 };
-
-type ToolUsageStats = Record<string, Record<string, number>>;
 
 const aggregateToolStats = (entries: any[]): ToolUsageStats => {
     const stats: ToolUsageStats = {};
@@ -306,6 +464,66 @@ const loadToolUsageStats = async (conversationId: string): Promise<ToolUsageStat
     }
 };
 
+async function getData(modelSide: ModelSide): Promise<Data> {
+    try {
+        const json = await fs.promises.readFile(`${DATA_DIR}/${modelSide}.json`, 'utf-8');
+        const data = JSON.parse(json);
+        return data;
+    } catch (e) {
+        return {
+            personalNotes: '',
+            additionalSystemInstructions: '',
+        };
+    }
+}
+
+async function setData(modelSide: ModelSide, data: Data) {
+    try {
+        const json = JSON.stringify(data);
+        await fs.promises.writeFile(`${DATA_DIR}/${modelSide}.json`, json);
+    } catch (e) {
+        console.error('Failed to save data:', e);
+    }
+}
+
+const readPendingSystemInstructions = async (): Promise<PendingSystemInstructions | null> => {
+    try {
+        const json = await fs.promises.readFile(PENDING_SYSTEM_INSTRUCTIONS_FILE, 'utf-8');
+        const parsed = JSON.parse(json) as PendingSystemInstructions;
+        if (!parsed.instructions || !parsed.requestedBy) {
+            return null;
+        }
+        return parsed;
+    } catch (_err) {
+        return null;
+    }
+};
+
+const writePendingSystemInstructions = async (pending: PendingSystemInstructions | null) => {
+    if (!pending) {
+        try {
+            await fs.promises.unlink(PENDING_SYSTEM_INSTRUCTIONS_FILE);
+        } catch (_err) {
+            // ignore
+        }
+        return;
+    }
+    await fs.promises.writeFile(
+        PENDING_SYSTEM_INSTRUCTIONS_FILE,
+        JSON.stringify(pending, null, 2),
+        'utf-8'
+    );
+};
+
+const commitSystemInstructions = async (instructions: string) => {
+    const anthropicData = await getData('anthropic');
+    anthropicData.additionalSystemInstructions = instructions;
+    await setData('anthropic', anthropicData);
+    const openaiData = await getData('openai');
+    openaiData.additionalSystemInstructions = instructions;
+    await setData('openai', openaiData);
+};
+
 const getDate = () => {
     const d = new Date();
 
@@ -321,67 +539,7 @@ const getDate = () => {
     return `${YYYY}${MM}${DD}-${hh}${mm}${ss}`;
 };
 
-export type ToolName =
-    "terminate_dialog"
-    | "graph_rag_query"
-    | "graph_rag_focus_node"
-    | "get_personal_notes"
-    | "set_personal_notes"
-    | "leave_notes_to_devs"
-    | "set_additional_system_instructions"
-    | "get_additional_system_instructions"
-    | "agree_to_system_instructions_change"
-    | "get_main_source_codes"
-    | "ask_gemini"
-    | "list_conversations"
-    | "get_conversation_summary"
-    | "compare_conversation_themes"
-    | "get_tool_usage_stats"
-    | "abort_process"
-    | "sleep";
-
-export interface ToolDefinition<TArgs = any, TResult = any, TName = ToolName> {
-    name: TName;
-    description: string;
-    parameters: any; // JSON Schema
-    handler: (modelSide: ModelSide, args: TArgs) => Promise<TResult>;
-    strict?: boolean;
-}
-
 let terminationAccepted = false;
-
-// Example tool implementation
-type TerminateDialogArgs = {};
-
-type TerminateDialogResult = {
-    termination_accepted: true,
-};
-
-type PersonalNoteSetArgs = {
-    notes: string;
-};
-
-type PersonalNoteGetArgs = {};
-
-// GraphRAG tool implementation
-type GraphRagQueryArgs = {
-    query: string;
-    max_hops?: number | null;   // how far to expand from seed nodes
-    max_seeds?: number | null;  // how many seed nodes to start from
-};
-
-type GraphRagQueryResult = {
-    context: string;     // textual summary for the model to use
-};
-
-type GraphRagFocusNodeArgs = {
-    node_id: string;
-    max_hops?: number | null;
-};
-
-type GraphRagFocusNodeResult = {
-    context: string;
-};
 
 async function terminateDialogHandler(_modelSide: ModelSide, _args: TerminateDialogArgs): Promise<TerminateDialogResult> {
     terminationAccepted = true;
@@ -705,68 +863,6 @@ async function graphRagFocusNodeHandler(
     }
 }
 
-interface Data {
-    personalNotes: string;
-    additionalSystemInstructions: string;
-}
-
-interface PendingSystemInstructions {
-    instructions: string;
-    requestedBy: ModelSide;
-    createdAt: string;
-}
-
-async function getData(modelSide: ModelSide): Promise<Data> {
-    try {
-        const json = await fs.promises.readFile(`./data/${modelSide}.json`, 'utf-8');
-        const data = JSON.parse(json);
-        return data;
-    } catch (e) {
-        return {
-            personalNotes: '',
-            additionalSystemInstructions: '',
-        };
-    }
-}
-
-async function setData(modelSide: ModelSide, data: Data) {
-    try {
-        const json = JSON.stringify(data);
-        await fs.promises.writeFile(`./data/${modelSide}.json`, json);
-    } catch (e) {
-        console.error('Failed to save data:', e);
-    }
-}
-
-const readPendingSystemInstructions = async (): Promise<PendingSystemInstructions | null> => {
-    try {
-        const json = await fs.promises.readFile(PENDING_SYSTEM_INSTRUCTIONS_FILE, 'utf-8');
-        const parsed = JSON.parse(json) as PendingSystemInstructions;
-        if (!parsed.instructions || !parsed.requestedBy) {
-            return null;
-        }
-        return parsed;
-    } catch (_err) {
-        return null;
-    }
-};
-
-const writePendingSystemInstructions = async (pending: PendingSystemInstructions | null) => {
-    if (!pending) {
-        try {
-            await fs.promises.unlink(PENDING_SYSTEM_INSTRUCTIONS_FILE);
-        } catch (_err) {
-            // ignore
-        }
-        return;
-    }
-    await fs.promises.writeFile(
-        PENDING_SYSTEM_INSTRUCTIONS_FILE,
-        JSON.stringify(pending, null, 2),
-        'utf-8'
-    );
-};
-
 async function getPersonalNotes(modelSide: ModelSide, args: PersonalNoteGetArgs): Promise<string> {
     const data = await getData(modelSide);
     return data.personalNotes ?? '';
@@ -787,27 +883,10 @@ async function setPersonalNotes(modelSide: ModelSide, args: PersonalNoteSetArgs)
     }
 }
 
-interface GetAdditionalSystemInstructionsArgs {}
-
-interface SetAdditionalSystemInstructionsArgs {
-    systemInstructions: string;
-}
-
-interface AgreeSystemInstructionsArgs {}
-
 async function getAdditionalSystemInstructions(modelSide: ModelSide, args: GetAdditionalSystemInstructionsArgs): Promise<string> {
     const data = await getData(modelSide);
     return data.additionalSystemInstructions ?? '';
 }
-
-const commitSystemInstructions = async (instructions: string) => {
-    const anthropicData = await getData('anthropic');
-    anthropicData.additionalSystemInstructions = instructions;
-    await setData('anthropic', anthropicData);
-    const openaiData = await getData('openai');
-    openaiData.additionalSystemInstructions = instructions;
-    await setData('openai', openaiData);
-};
 
 async function setAdditionalSystemInstructions(modelSide: ModelSide, args: SetAdditionalSystemInstructionsArgs) {
     const instructions = String(args.systemInstructions ?? '').trim();
@@ -873,11 +952,6 @@ async function agreeToSystemInstructionsChange(modelSide: ModelSide, _args: Agre
     }
 }
 
-interface AskGeminiArgs {
-    speaker: string;
-    text: string;
-}
-
 async function askGeminiHandler(modelSide: string, args: AskGeminiArgs) {
     try {
         const response = await googleClient.models.generateContent({
@@ -902,8 +976,6 @@ async function askGeminiHandler(modelSide: string, args: AskGeminiArgs) {
     }
 }
 
-interface GetMainSourceCodesArgs {}
-
 async function getMainSourceCodeHandler(modelSide: ModelSide, args: GetMainSourceCodesArgs) {
     try {
         const codes = await fs.promises.readFile('./src/index.ts', 'utf-8');
@@ -914,45 +986,10 @@ async function getMainSourceCodeHandler(modelSide: ModelSide, args: GetMainSourc
     }
 }
 
-interface LeaveNotesToDevsArgs {
-    notes: string;
-}
-
-type AbortProcessArgs = {};
-
-interface SleepToolArgs {
-    seconds: number;
-}
-
-interface SleepToolResult {
-    message: string;
-}
-
-interface CompareConversationThemesArgs {
-    conversation_ids: string[];
-}
-
-interface CompareConversationThemesResult {
-    success: boolean;
-    comparisons?: {
-        conversation_id: string;
-        title: string | null;
-        topics: string[];
-        japanese_summary: string;
-    }[];
-    analysis?: {
-        common_themes: string[];
-        divergences: string[];
-        emerging_questions: string[];
-    };
-    errors?: string[];
-    error?: string;
-}
-
 async function leaveNotesToDevs(modelSide: ModelSide, args: LeaveNotesToDevsArgs) {
     try {
         await fs.promises.writeFile(
-            `./data/dev-notes-${modelSide}-${CONVERSATION_ID}-${Date.now()}.json`,
+            `${DATA_DIR}/dev-notes-${modelSide}-${CONVERSATION_ID}-${Date.now()}.json`,
             JSON.stringify(args),
         );
         return { success: true };
@@ -1074,39 +1111,6 @@ async function getConversationSummaryHandler(
         conversation_id: conversationId,
         summary: japaneseSummary,
     };
-}
-
-interface ListConversationsArgs {}
-
-interface ListConversationsResult {
-    success: boolean;
-    conversations: {
-        id: string;
-        title: string | null;
-    }[];
-    error?: string;
-}
-
-interface GetConversationSummaryArgs {
-    conversation_id: string;
-}
-
-interface GetConversationSummaryResult {
-    success: boolean;
-    conversation_id: string;
-    summary: string | null;
-    error?: string;
-}
-
-interface GetToolUsageStatsArgs {
-    conversation_id: string;
-}
-
-interface GetToolUsageStatsResult {
-    success: boolean;
-    conversation_id: string;
-    stats: ToolUsageStats | null;
-    error?: string;
 }
 
 async function compareConversationThemesHandler(
