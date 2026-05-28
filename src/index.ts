@@ -15,6 +15,7 @@ import neo4j from "neo4j-driver";
 import { GoogleGenAI } from "@google/genai";
 
 import { output_to_html } from './html.js';
+import { ResponseInputItem, ResponseOutputItem } from 'openai/resources/responses/responses.mjs';
 
 const FILENAME = fs.realpathSync(url.fileURLToPath(import.meta.url));
 const ARGV1 = fs.realpathSync(path.resolve(process.argv[1]!));
@@ -40,11 +41,11 @@ const DEFAULT_DATA_DIR = './data';
 const TOOL_STATS_SUBDIR = 'tool-stats';
 const PENDING_SYSTEM_INSTRUCTIONS_FILENAME = 'pending-system-instructions.json';
 
-const DEFAULT_OPENAI_MODEL = 'gpt-5.1';
-const DEFAULT_ANTHROPIC_MODEL = 'claude-haiku-4-5';
+const DEFAULT_OPENAI_MODEL = 'gpt-5.5';
+const DEFAULT_ANTHROPIC_MODEL = 'claude-opus-4-7';
 
-const DEFAULT_OPENAI_NAME = 'GPT 5.1';
-const DEFAULT_ANTHROPIC_NAME = 'Claude Haiku 4.5';
+const DEFAULT_OPENAI_NAME = 'GPT 5.5';
+const DEFAULT_ANTHROPIC_NAME = 'Claude Opus 4.7';
 
 /// TYPES
 export interface PhilosophyDialogArgs {
@@ -1638,7 +1639,7 @@ ${this.#additionalSystemInstructions || '（なし）'}
                     throw new Error('Empty output from OpenAI');
                 }
 
-                msgs.push(...outputItems);
+                msgs.push(...outputItems as ResponseInputItem[]);
                 if (this.#shouldExit) return;
                 const functionCalls = outputItems.filter(
                     (item): item is OpenAI.Responses.ResponseFunctionToolCall => item.type === 'function_call'

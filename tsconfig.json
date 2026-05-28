@@ -10,6 +10,7 @@
     "declaration": true,
     "newLine": "lf",
     "outDir": "./dist/",
+    "rootDir": ".",
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
     "strict": true,
